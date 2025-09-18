@@ -1,0 +1,38 @@
+{
+  "name": "proxmox2mqtt",
+  "version": "1.0.0",
+  "description": "Pont Node.js qui connecte votre cluster Proxmox à Home Assistant via MQTT auto-discovery",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix"
+  },
+  "keywords": [
+    "proxmox",
+    "mqtt",
+    "home-assistant",
+    "automation",
+    "monitoring"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "lru-cache": "^10.4.3",
+    "mqtt": "^5.2.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.35.0",
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
