@@ -90,6 +90,9 @@ class ProxmoxAPI {
                 ? Math.round((statusData.rootfs.used / statusData.rootfs.total) * 100) 
                 : 0;
 
+            // Récupère le statut des storages (ex: Ceph)
+            const storageData = await this.getStorageStatus(nodeName);
+
             return {
                 node: nodeName,
                 status: statusData.uptime > 0 ? 'online' : 'offline',
@@ -111,7 +114,8 @@ class ProxmoxAPI {
                 load1: statusData.loadavg ? statusData.loadavg[0] : 0,
                 load5: statusData.loadavg ? statusData.loadavg[1] : 0,
                 load15: statusData.loadavg ? statusData.loadavg[2] : 0,
-                storage: { ceph: { status: 'unknown', usage: 0, used: 0, total: 0 } },
+                ceph: storageData.ceph,
+                // storage: { ceph: { status: 'unknown', usage: 0, used: 0, total: 0 } },
                 lastUpdate: new Date().toISOString()
             };
         } catch (error) {
@@ -140,11 +144,11 @@ class ProxmoxAPI {
         }
     }
 
-    async getStorageStatus() {
+    async getStorageStatus(nodeName) {
         try {
             logger.debug('Récupération du statut des storages...');
-            
-            const response = await this.makeRequest('/api2/json/storage');
+
+            const response = await this.client.get(`/nodes/${nodeName}/storage`);
             const storages = response.data.data;
             
             const result = {
@@ -160,7 +164,7 @@ class ProxmoxAPI {
                 // Récupérer les détails du premier storage Ceph trouvé
                 const cephStorage = cephStorages[0];
                 try {
-                    const storageResponse = await this.makeRequest(`/api2/json/nodes/${this.nodes[0]}/storage/${cephStorage.storage}/status`);
+                    const storageResponse = await this.client.get(`/nodes/${nodeName}/storage/${cephStorage.storage}/status`);
                     
                     if (storageResponse.data.data) {
                         const storageData = storageResponse.data.data;

@@ -71,6 +71,23 @@ class HomeAssistantDiscovery {
                 state_class: 'measurement'
             }, deviceInfo);
 
+            // Capteurs de stockage Ceph
+            await this.publishSensorDiscovery(nodeName, 'ceph', {
+                name: `${nodeName} Ceph Status`,
+                icon: 'mdi:database',
+                device_class: null,
+                unit_of_measurement: null
+            }, deviceInfo);
+
+            await this.publishSensorDiscovery(nodeName, 'ceph_usage', {
+                name: `${nodeName} Ceph Usage`,
+                icon: 'mdi:database',
+                device_class: null,
+                unit_of_measurement: '%',
+                state_class: 'measurement',
+                state_topic: `${this.baseTopic}/${nodeName}/ceph/usage`
+            }, deviceInfo);
+
             // Bouton redémarrage
             await this.publishButtonDiscovery(nodeName, 'restart', {
                 name: `${nodeName} Restart`,

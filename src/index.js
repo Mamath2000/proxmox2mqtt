@@ -131,11 +131,17 @@ class Proxmox2MQTT {
         try {
             logger.debug(`Mise à jour des données pour ${this.nodes.size} nœuds`);
             
+            // // Récupérer les données de stockage Ceph une seule fois (partagées par tous les nœuds)
+            // const storageData = await this.proxmox.getStorageStatus(nodeName);
+            
             for (const [nodeName] of this.nodes) {
                 try {
                     const nodeData = await this.proxmox.getNodeStatus(nodeName);
                     
                     if (nodeData) {
+                        // // Ajouter les données de stockage aux données du nœud
+                        // nodeData.storage = storageData;
+                        
                         await this.mqtt.publishNodeData(nodeName, nodeData);
                         
                         // Publier la disponibilité
