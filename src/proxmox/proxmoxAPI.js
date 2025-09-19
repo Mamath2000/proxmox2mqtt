@@ -66,73 +66,52 @@ class ProxmoxAPI {
                 return null;
             }
 
-            // Récupérer les informations avec gestion d'erreur individuelle
-            let statusData = {};
-            let resourcesData = {};
+            // Utiliser uniquement l'endpoint /nodes/{node}/status qui est plus fiable
+            const statusResponse = await this.client.get(`/nodes/${nodeName}/status`);
+            const statusData = statusResponse.data.data;
+            
+            logger.debug(`Statut récupéré pour ${nodeName}:`, {
+                uptime: statusData.uptime,
+                cpu: statusData.cpu,
+                memory: statusData.memory,
+                rootfs: statusData.rootfs
+            });
 
-            try {
-                const statusResponse = await this.client.get(`/nodes/${nodeName}/status`);
-                statusData = statusResponse.data.data;
-                logger.debug(`Statut récupéré pour ${nodeName}`);
-            } catch (statusError) {
-                logger.warn(`Impossible de récupérer le statut direct pour ${nodeName}: ${statusError.message}`);
-            }
-
-            try {
-                const resourcesResponse = await this.client.get(`/cluster/resources?type=node&node=${nodeName}`);
-                resourcesData = resourcesResponse.data.data[0] || {};
-                logger.debug(`Ressources récupérées pour ${nodeName}`);
-            } catch (resourcesError) {
-                logger.warn(`Impossible de récupérer les ressources pour ${nodeName}: ${resourcesError.message}`);
-                
-                // Fallback: essayer sans filtrer par nœud
-                try {
-                    const allResourcesResponse = await this.client.get('/cluster/resources?type=node');
-                    const allResources = allResourcesResponse.data.data;
-                    resourcesData = allResources.find(resource => resource.node === nodeName) || {};
-                    logger.debug(`Ressources trouvées via fallback pour ${nodeName}`);
-                } catch (fallbackError) {
-                    logger.warn(`Impossible de récupérer les ressources via fallback pour ${nodeName}: ${fallbackError.message}`);
-                    
-                    // Fallback final: utiliser les données du nœud simple
-                    try {
-                        const nodeResponse = await this.client.get(`/nodes/${nodeName}`);
-                        const nodeData = nodeResponse.data.data || {};
-                        resourcesData = {
-                            status: nodeData.status || (statusData.uptime > 0 ? 'online' : 'offline'),
-                            cpu: nodeData.cpu,
-                            maxcpu: nodeData.maxcpu,
-                            mem: nodeData.mem,
-                            maxmem: nodeData.maxmem,
-                            disk: nodeData.disk,
-                            maxdisk: nodeData.maxdisk
-                        };
-                        logger.debug(`Ressources récupérées via nœud simple pour ${nodeName}`);
-                    } catch (finalError) {
-                        logger.error(`Impossible de récupérer les données par tous les moyens pour ${nodeName}: ${finalError.message}`);
-                    }
-                }
-            }
+            // Calculer l'utilisation CPU en pourcentage
+            const cpuUsage = statusData.cpu ? Math.round(statusData.cpu * 100) : 0;
+            
+            // Calculer l'utilisation mémoire
+            const memoryUsage = statusData.memory && statusData.memory.total > 0 
+                ? Math.round((statusData.memory.used / statusData.memory.total) * 100) 
+                : 0;
+            
+            // Calculer l'utilisation disque (rootfs)
+            const diskUsage = statusData.rootfs && statusData.rootfs.total > 0 
+                ? Math.round((statusData.rootfs.used / statusData.rootfs.total) * 100) 
+                : 0;
 
             return {
                 node: nodeName,
-                status: resourcesData.status || statusData.status || 'unknown',
+                status: statusData.uptime > 0 ? 'online' : 'offline',
                 uptime: statusData.uptime || 0,
                 cpu: {
-                    usage: Math.round((resourcesData.cpu || 0) * 100),
-                    cores: resourcesData.maxcpu || 0
+                    usage: cpuUsage,
+                    cores: statusData.cpuinfo ? statusData.cpuinfo.cpus : 0
                 },
                 memory: {
-                    used: resourcesData.mem || 0,
-                    total: resourcesData.maxmem || 0,
-                    usage: resourcesData.maxmem ? Math.round((resourcesData.mem / resourcesData.maxmem) * 100) : 0
+                    used: statusData.memory ? statusData.memory.used : 0,
+                    total: statusData.memory ? statusData.memory.total : 0,
+                    usage: memoryUsage
                 },
                 disk: {
-                    used: resourcesData.disk || 0,
-                    total: resourcesData.maxdisk || 0,
-                    usage: resourcesData.maxdisk ? Math.round((resourcesData.disk / resourcesData.maxdisk) * 100) : 0
+                    used: statusData.rootfs ? statusData.rootfs.used : 0,
+                    total: statusData.rootfs ? statusData.rootfs.total : 0,
+                    usage: diskUsage
                 },
-                load: statusData.loadavg ? statusData.loadavg[0] : 0,
+                load1: statusData.loadavg ? statusData.loadavg[0] : 0,
+                load5: statusData.loadavg ? statusData.loadavg[1] : 0,
+                load15: statusData.loadavg ? statusData.loadavg[2] : 0,
+                storage: { ceph: { status: 'unknown', usage: 0, used: 0, total: 0 } },
                 lastUpdate: new Date().toISOString()
             };
         } catch (error) {
@@ -151,9 +130,77 @@ class ProxmoxAPI {
                 cpu: { usage: 0, cores: 0 },
                 memory: { used: 0, total: 0, usage: 0 },
                 disk: { used: 0, total: 0, usage: 0 },
-                load: 0,
+                load1: 0,
+                load5: 0,
+                load15: 0,
+                storage: { ceph: { status: 'error', usage: 0, used: 0, total: 0 } },
                 lastUpdate: new Date().toISOString(),
                 error: error.message
+            };
+        }
+    }
+
+    async getStorageStatus() {
+        try {
+            logger.debug('Récupération du statut des storages...');
+            
+            const response = await this.makeRequest('/api2/json/storage');
+            const storages = response.data.data;
+            
+            const result = {
+                ceph: { status: 'not_found', usage: 0, used: 0, total: 0 }
+            };
+
+            // Chercher les storages Ceph
+            const cephStorages = storages.filter(storage => 
+                storage.type === 'cephfs' || storage.type === 'rbd'
+            );
+
+            if (cephStorages.length > 0) {
+                // Récupérer les détails du premier storage Ceph trouvé
+                const cephStorage = cephStorages[0];
+                try {
+                    const storageResponse = await this.makeRequest(`/api2/json/nodes/${this.nodes[0]}/storage/${cephStorage.storage}/status`);
+                    
+                    if (storageResponse.data.data) {
+                        const storageData = storageResponse.data.data;
+                        const usage = storageData.total > 0 
+                            ? Math.round((storageData.used / storageData.total) * 100) 
+                            : 0;
+
+                        result.ceph = {
+                            status: storageData.enabled !== false ? 'healthy' : 'disabled',
+                            usage: usage,
+                            used: storageData.used || 0,
+                            total: storageData.total || 0,
+                            available: storageData.avail || 0,
+                            type: cephStorage.type,
+                            storage_id: cephStorage.storage
+                        };
+                    }
+                } catch (storageError) {
+                    logger.warn(`Impossible de récupérer le statut du storage ${cephStorage.storage}:`, storageError.message);
+                    result.ceph = {
+                        status: 'unavailable',
+                        usage: 0,
+                        used: 0,
+                        total: 0,
+                        storage_id: cephStorage.storage,
+                        error: storageError.message
+                    };
+                }
+            }
+
+            return result;
+        } catch (error) {
+            logger.error('Erreur lors de la récupération du statut des storages:', {
+                message: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText
+            });
+            
+            return {
+                ceph: { status: 'error', usage: 0, used: 0, total: 0, error: error.message }
             };
         }
     }

@@ -47,8 +47,24 @@ class HomeAssistantDiscovery {
             }, deviceInfo);
 
             // Capteur charge système
-            await this.publishSensorDiscovery(nodeName, 'load', {
-                name: `${nodeName} Load Average`,
+            await this.publishSensorDiscovery(nodeName, 'load1', {
+                name: `${nodeName} Load Average 1m`,
+                icon: 'mdi:chart-line',
+                device_class: null,
+                unit_of_measurement: null,
+                state_class: 'measurement'
+            }, deviceInfo);
+            // Capteur charge système
+            await this.publishSensorDiscovery(nodeName, 'load5', {
+                name: `${nodeName} Load Average 5m`,
+                icon: 'mdi:chart-line',
+                device_class: null,
+                unit_of_measurement: null,
+                state_class: 'measurement'
+            }, deviceInfo);
+            // Capteur charge système
+            await this.publishSensorDiscovery(nodeName, 'load15', {
+                name: `${nodeName} Load Average 15m`,
                 icon: 'mdi:chart-line',
                 device_class: null,
                 unit_of_measurement: null,

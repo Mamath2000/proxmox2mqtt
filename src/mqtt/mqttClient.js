@@ -124,21 +124,27 @@ class MQTTClient extends EventEmitter {
                 usage_percent: data.cpu.usage
             }), { retain: true });
 
-            await this.publish(`${baseTopic}/memory/state`, data.memory.usage.toString(), { retain: true });
+            await this.publish(`${baseTopic}/memory/state`, (data.memory.usage || 0).toString(), { retain: true });
             await this.publish(`${baseTopic}/memory/attributes`, JSON.stringify({
-                used_bytes: data.memory.used,
-                total_bytes: data.memory.total,
-                usage_percent: data.memory.usage
+                used_bytes: data.memory.used || 0,
+                total_bytes: data.memory.total || 0,
+                usage_percent: data.memory.usage || 0
             }), { retain: true });
 
-            await this.publish(`${baseTopic}/disk/state`, data.disk.usage.toString(), { retain: true });
+            await this.publish(`${baseTopic}/disk/state`, (data.disk.usage || 0).toString(), { retain: true });
             await this.publish(`${baseTopic}/disk/attributes`, JSON.stringify({
-                used_bytes: data.disk.used,
-                total_bytes: data.disk.total,
-                usage_percent: data.disk.usage
+                used_bytes: data.disk.used || 0,
+                total_bytes: data.disk.total || 0,
+                usage_percent: data.disk.usage || 0
             }), { retain: true });
 
-            await this.publish(`${baseTopic}/load/state`, data.load.toString(), { retain: true });
+            // Publication des métriques de charge système (load average)
+            await this.publish(`${baseTopic}/load1/state`, (data.load1 || 0).toString(), { retain: true });
+            await this.publish(`${baseTopic}/load5/state`, (data.load5 || 0).toString(), { retain: true });
+            await this.publish(`${baseTopic}/load15/state`, (data.load15 || 0).toString(), { retain: true });
+            
+            // Compatibilité : publier load1 comme load pour les anciennes configurations
+            await this.publish(`${baseTopic}/load/state`, (data.load1 || 0).toString(), { retain: true });
 
             logger.debug(`Données publiées pour le nœud ${nodeName}`);
         } catch (error) {
