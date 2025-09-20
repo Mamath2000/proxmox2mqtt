@@ -97,21 +97,29 @@ class ProxmoxAPI {
                 node: nodeName,
                 state: statusData.uptime > 0 ? 'online' : 'offline',
                 uptime: statusData.uptime || 0,
-                cpu_usage: cpuUsage,
-                cpu_cores: statusData.cpuinfo ? statusData.cpuinfo.cpus : 0,
-                mem_used: statusData.memory ? statusData.memory.used : 0,
-                mem_total: statusData.memory ? statusData.memory.total : 0,
-                mem_usage: memoryUsage,
-                disk_used: statusData.rootfs ? statusData.rootfs.used : 0,
-                disk_total: statusData.rootfs ? statusData.rootfs.total : 0,
-                disk_usage: diskUsage,
+                cpu: {
+                    usage: cpuUsage,
+                    cores: statusData.cpuinfo ? statusData.cpuinfo.cpus : 0,
+                },
+                memory: {
+                    usage: memoryUsage,
+                    used: statusData.memory ? statusData.memory.used : 0,
+                    total: statusData.memory ? statusData.memory.total : 0,
+                },
+                disk: {
+                    used: statusData.rootfs ? statusData.rootfs.used : 0,
+                    total: statusData.rootfs ? statusData.rootfs.total : 0,
+                    usage: diskUsage,
+                },
                 load1: statusData.loadavg ? statusData.loadavg[0] : 0,
                 load5: statusData.loadavg ? statusData.loadavg[1] : 0,
                 load15: statusData.loadavg ? statusData.loadavg[2] : 0,
-                ceph_used: storageData.ceph.used,
-                ceph_total: storageData.ceph.total,
-                ceph_usage: storageData.ceph.usage,
-                ceph_status: storageData.ceph.status,
+                ceph: {
+                    used: storageData.ceph.used,
+                    total: storageData.ceph.total,
+                    usage: storageData.ceph.usage,
+                    status: storageData.ceph.status
+                },
                 lastUpdate: new Date().toISOString()
             };
         } catch (error) {
@@ -231,9 +239,129 @@ class ProxmoxAPI {
     async getContainers(nodeName) {
         try {
             const response = await this.client.get(`/nodes/${nodeName}/lxc`);
+            // add container Key on each container
+            response.data.data.forEach(container => {
+                container.containerKey = `${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`;
+            });
+
             return response.data.data;
         } catch (error) {
             logger.error(`Erreur lors de la récupération des conteneurs du nœud ${nodeName}:`, error.message);
+            throw error;
+        }
+    }
+
+    async getContainerStatus(nodeName, containerId) {
+        try {
+            logger.debug(`Récupération du statut pour le conteneur: ${containerId} sur ${nodeName}`);
+            
+            const response = await this.client.get(`/nodes/${nodeName}/lxc/${containerId}/status/current`);
+            const statusData = response.data.data;
+
+            logger.debug(`Statut récupéré pour ${containerId}:`, statusData);
+
+            // Calculer l'utilisation CPU en pourcentage
+            const cpuUsage = statusData.cpu ? Math.round(statusData.cpu * 100) : 0;
+            
+            // Calculer l'utilisation mémoire
+            const memoryUsage = statusData.maxmem && statusData.maxmem > 0 
+                ? Math.round((statusData.mem / statusData.maxmem) * 100) 
+                : 0;
+
+            // recherche le tag "ha-ignore"
+            const tagsArray = statusData.tags ? statusData.tags.split(';') : [];
+            const haIgnoreTag = tagsArray.find(tag => tag.trim() === 'ha-ignore');
+            if (haIgnoreTag) {
+                logger.info(`Le conteneur ${containerId} sur ${nodeName} est ignoré par Home Assistant`);
+            }
+
+            return {
+                key: `${containerId}_${statusData.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`,
+                node: nodeName,
+                vmid: containerId,
+                name: statusData.name,
+                isIgnore: haIgnoreTag ? true : false,
+                tags: tagsArray,
+                status: statusData.status || 'unknown',
+                uptime: statusData.uptime || 0,
+                cpu: {
+                    usage: cpuUsage,
+                    cores: statusData.cpus || 0
+                },
+                memory: {
+                    used: statusData.mem || 0,
+                    total: statusData.maxmem || 0,
+                    usage: memoryUsage
+                },
+                disk: {
+                    used: statusData.disk || 0,
+                    total: statusData.maxdisk || 0,
+                    usage: statusData.maxdisk > 0 ? Math.round((statusData.disk / statusData.maxdisk) * 100) : 0
+                },
+                swap: {
+                    used: statusData.swap || 0,
+                    total: statusData.maxswap || 0,
+                    usage: statusData.maxswap > 0 ? Math.round((statusData.swap / statusData.maxswap) * 100) : 0
+                },
+                network: {
+                    in: statusData.netin || 0,
+                    out: statusData.netout || 0
+                },
+                lastUpdate: new Date().toISOString()
+            };
+        } catch (error) {
+            logger.error(`Erreur lors de la récupération du statut du conteneur ${containerId} sur ${nodeName}:`, {
+                message: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                data: error.response?.data
+            });
+            
+            return {
+                node: nodeName,
+                vmid: containerId,
+                name: `CT-${containerId}`,
+                status: 'error',
+                uptime: 0,
+                cpu: { usage: 0, cores: 0 },
+                memory: { used: 0, total: 0, usage: 0 },
+                disk: { used: 0, total: 0, usage: 0 },
+                network: { in: 0, out: 0 },
+                lastUpdate: new Date().toISOString(),
+                error: error.message
+            };
+        }
+    }
+
+    async startContainer(nodeName, containerId) {
+        try {
+            const response = await this.client.post(`/nodes/${nodeName}/lxc/${containerId}/status/start`);
+            logger.info(`Démarrage du conteneur ${containerId} sur ${nodeName} initié`);
+            return response.data;
+        } catch (error) {
+            logger.error(`Erreur lors du démarrage du conteneur ${containerId} sur ${nodeName}:`, error.message);
+            throw error;
+        }
+    }
+
+    async stopContainer(nodeName, containerId) {
+        try {
+            const response = await this.client.post(`/nodes/${nodeName}/lxc/${containerId}/status/stop`);
+            logger.info(`Arrêt du conteneur ${containerId} sur ${nodeName} initié`);
+            return response.data;
+        } catch (error) {
+            logger.error(`Erreur lors de l'arrêt du conteneur ${containerId} sur ${nodeName}:`, error.message);
+            throw error;
+        }
+    }
+
+    async rebootContainer(nodeName, containerId) {
+        try {
+            const response = await this.client.post(`/nodes/${nodeName}/lxc/${containerId}/status/reboot`);
+            logger.info(`Redémarrage du conteneur ${containerId} sur ${nodeName} initié`);
+            return response.data;
+        } catch (error) {
+            logger.error(`Erreur lors du redémarrage du conteneur ${containerId} sur ${nodeName}:`, error.message);
             throw error;
         }
     }

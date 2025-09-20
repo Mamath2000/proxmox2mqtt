@@ -15,11 +15,11 @@ class HomeAssistantDiscovery {
             origin: { 
                 name: "Proxmox2MQTT"
             },
-            state_topic: `${this.baseTopic}/${nodeName}`,
+            state_topic: `${this.baseTopic}/nodes/${nodeName}`,
             components: {},
         };
         const availability = {
-            topic: `${this.baseTopic}/${nodeName}/availability`,
+            topic: `${this.baseTopic}/nodes/${nodeName}/availability`,
             payload_available: 'online',
             payload_not_available: 'offline'
         };
@@ -31,7 +31,9 @@ class HomeAssistantDiscovery {
                                                     icon: 'mdi:server',
                                                     device_class: 'connectivity',
                                                     payload_on: 'online',
-                                                    payload_off: 'offline'
+                                                    payload_off: 'offline',
+                                                    state_topic: `${this.baseTopic}/nodes/${nodeName}/availability`,
+                                                    value_template: `{{ value }}`,
                                                 }),
             // Capteur CPU
             [`${nodeName}_cpu_usage`] : this.addSensorDiscovery(nodeName, 'cpu_usage', {
@@ -167,21 +169,21 @@ class HomeAssistantDiscovery {
                                                     availability: availability
                                                 }),
             // Bouton redémarrage
-            [`${nodeName}_restart`] : this.addButtonDiscovery(nodeName, 'restart', {
+            [`${nodeName}_restart`] : this.addButtonDiscovery(nodeName,"nodes", 'restart', {
                                                     name: `Restart`,
                                                     icon: 'mdi:restart',
                                                     device_class: 'restart',
                                                     availability: availability
                                                 }),
             // Bouton arrêt
-            [`${nodeName}_shutdown`] : this.addButtonDiscovery(nodeName, 'shutdown', {
+            [`${nodeName}_shutdown`] : this.addButtonDiscovery(nodeName,"nodes", 'shutdown', {
                                                     name: `Shutdown`,
                                                     icon: 'mdi:power',
                                                     device_class: null,
                                                     availability: availability
                                                 }),
             // Bouton actualisation
-            [`${nodeName}_refresh`] : this.addButtonDiscovery(nodeName, 'refresh', {
+            [`${nodeName}_refresh`] : this.addButtonDiscovery(nodeName,"nodes", 'refresh', {
                                                     name: `Refresh`,
                                                     icon: 'mdi:refresh',
                                                     device_class: null,
@@ -190,7 +192,7 @@ class HomeAssistantDiscovery {
         };
 
         try {
-            await this.mqtt.publishDiscovery('device', nodeName, 'node', device);
+            await this.mqtt.publishDeviceDiscovery(`nodes/${nodeName}`, device);
 
             logger.info(`Configuration de découverte publiée pour le nœud ${nodeName}`);
         } catch (error) {
@@ -201,8 +203,6 @@ class HomeAssistantDiscovery {
 
     addBinarySensorDiscovery(nodeName, sensorType, sensorConfig) {
         const entityId = `${nodeName}_${sensorType}`;
-        // const stateTopic = `${this.baseTopic}/${nodeName}/${sensorType}/state`;
-        // const attributesTopic = `${this.baseTopic}/${nodeName}/${sensorType}/attributes`;
 
         return {
             platform: 'binary_sensor',
@@ -211,9 +211,8 @@ class HomeAssistantDiscovery {
             has_entity_name: true,
             force_update: true,
             name: sensorConfig.name,
-            // state_topic: stateTopic,
-            // json_attributes_topic: attributesTopic,
             icon: sensorConfig.icon,
+            availability_mode: "all",
             value_template: `{{ value_json.${sensorType} }}`,
             ...sensorConfig
         };
@@ -221,9 +220,7 @@ class HomeAssistantDiscovery {
 
     addSensorDiscovery(nodeName, sensorType, sensorConfig) {
         const entityId = `${nodeName}_${sensorType}`;
-        // const stateTopic = `${this.baseTopic}/${nodeName}/${sensorType}/state`;
-        // const attributesTopic = `${this.baseTopic}/${nodeName}/${sensorType}/attributes`;
-
+        
         return {
             platform: 'sensor',
             unique_id: entityId,
@@ -231,17 +228,16 @@ class HomeAssistantDiscovery {
             has_entity_name: true,
             force_update: true,
             name: sensorConfig.name,
-            // state_topic: stateTopic,
-            // json_attributes_topic: attributesTopic,
             icon: sensorConfig.icon,
+            availability_mode: "all",
             value_template: `{{ value_json.${sensorType} }}`,
             ...sensorConfig
         };
     }
 
-    addButtonDiscovery(nodeName, buttonType, buttonConfig) {
+    addButtonDiscovery(nodeName, domain, buttonType, buttonConfig) {
         const entityId = `${nodeName}_${buttonType}`;
-        const commandTopic = `${this.baseTopic}/${nodeName}/command/${buttonType}`;
+        const commandTopic = `${this.baseTopic}/${domain}/${nodeName}/command`;
 
         return {
             platform: 'button',
@@ -250,6 +246,7 @@ class HomeAssistantDiscovery {
             name: buttonConfig.name,
             command_topic: commandTopic,
             icon: buttonConfig.icon,
+            availability_mode: "all",
             payload_press: JSON.stringify({ action: buttonType }),
             ...buttonConfig
         };
@@ -261,13 +258,12 @@ class HomeAssistantDiscovery {
             name: `Proxmox ${nodeName}`,
             model: 'Proxmox VE Node',
             manufacturer: 'Proxmox',
-            sw_version: '1.0.0',
-            via_device: 'proxmox2mqtt_bridge'
+            sw_version: '1.0.0'
         };
     }
 
     async publishAvailability(nodeName, status = 'online') {
-        const availabilityTopic = `${this.baseTopic}/${nodeName}/availability`;
+        const availabilityTopic = `${this.baseTopic}/nodes/${nodeName}/availability`;
         try {
             await this.mqtt.publish(availabilityTopic, status, { retain: true });
         } catch (error) {
@@ -278,7 +274,7 @@ class HomeAssistantDiscovery {
     async removeNodeDiscovery(nodeName) {
         try {
             // Publier un message vide pour supprimer la configuration de découverte
-            const discoveryTopic = `homeassistant/device/${nodeName}_node/config`;
+            const discoveryTopic = `homeassistant/device/nodes/${nodeName}/config`;
             await this.mqtt.publish(discoveryTopic, '', { retain: true });
 
             // Marquer comme hors ligne
@@ -287,6 +283,190 @@ class HomeAssistantDiscovery {
             logger.info(`Configuration de découverte supprimée pour le nœud ${nodeName}`);
         } catch (error) {
             logger.error(`Erreur lors de la suppression de la découverte pour ${nodeName}:`, error);
+        }
+    }
+
+    async publishContainerDiscovery(container) {
+        const deviceInfo = this.getContainerDeviceInfo(container);
+
+        const device = {
+            device: deviceInfo,
+            origin: { 
+                name: "Proxmox2MQTT"
+            },
+            state_topic: `${this.baseTopic}/lxc/${container.key}`,
+            components: {},
+        };
+        
+        const lxcAvailability = {
+            topic: `${this.baseTopic}/lxc/${container.key}/availability`,
+            payload_available: 'online',
+            payload_not_available: 'offline'
+        };
+        const nodeAvailability = {
+            topic: `${this.baseTopic}/nodes/${container.node}/availability`,
+            payload_available: 'online',
+            payload_not_available: 'offline'
+        };
+        
+        device.components = {
+            // État du conteneur
+            [`${container.key}_state`]: this.addSensorDiscovery(container.key, 'state', {
+                name: `Status`,
+                icon: 'mdi:cube',
+                device_class: null,
+                state_class: null,
+                // availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // CPU Usage
+            [`${container.key}_cpu_usage`]: this.addSensorDiscovery(container.key, 'cpu_usage', {
+                name: `CPU Usage`,
+                icon: 'mdi:cpu-64-bit',
+                device_class: null,
+                unit_of_measurement: '%',
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // CPU Cores
+            [`${container.key}_cpu_cores`]: this.addSensorDiscovery(container.key, 'cpu_cores', {
+                name: `CPU Cores`,
+                icon: 'mdi:cpu-64-bit',
+                device_class: null,
+                unit_of_measurement: null,
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Memory Usage
+            [`${container.key}_mem_usage`]: this.addSensorDiscovery(container.key, 'mem_usage', {
+                name: `Memory Usage`,
+                icon: 'mdi:memory',
+                device_class: null,
+                unit_of_measurement: '%',
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Memory Total
+            [`${container.key}_mem_total`]: this.addSensorDiscovery(container.key, 'mem_total', {
+                name: `Memory Total`,
+                icon: 'mdi:memory',
+                device_class: 'data_size',
+                unit_of_measurement: 'Gbit',
+                value_template: `{{ (value_json.mem_total / 1024 / 1024 / 1024) | round(2) }}`,
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Memory Used
+            [`${container.key}_mem_used`]: this.addSensorDiscovery(container.key, 'mem_used', {
+                name: `Memory Used`,
+                icon: 'mdi:memory',
+                device_class: 'data_size',
+                unit_of_measurement: 'Gbit',
+                value_template: `{{ (value_json.mem_used / 1024 / 1024 / 1024) | round(2) }}`,
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Disk Usage
+            [`${container.key}_disk_usage`]: this.addSensorDiscovery(container.key, 'disk_usage', {
+                name: `Disk Usage`,
+                icon: 'mdi:harddisk',
+                device_class: null,
+                unit_of_measurement: '%',
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Network In
+            [`${container.key}_net_in`]: this.addSensorDiscovery(container.key, 'net_in', {
+                name: `Network In`,
+                icon: 'mdi:download',
+                device_class: 'data_size',
+                unit_of_measurement: 'Gbit',
+                state_class: 'total_increasing',
+                value_template: `{{ (value_json.net_in / 1024 / 1024 / 1024) | round(2) }}`,
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Network Out
+            [`${container.key}_net_out`]: this.addSensorDiscovery(container.key, 'net_out', {
+                name: `Network Out`,
+                icon: 'mdi:upload',
+                device_class: 'data_size',
+                unit_of_measurement: 'Gbit',
+                state_class: 'total_increasing',
+                value_template: `{{ (value_json.net_out / 1024 / 1024 / 1024) | round(2) }}`,
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Uptime
+            [`${container.key}_uptime`]: this.addSensorDiscovery(container.key, 'uptime', {
+                name: `Uptime`,
+                icon: 'mdi:clock',
+                device_class: 'duration',
+                unit_of_measurement: 's',
+                state_class: 'measurement',
+                availability: [lxcAvailability, nodeAvailability]
+            }),
+            
+            // Boutons de contrôle
+            [`${container.key}_start`]: this.addButtonDiscovery(container.key,"lxc", 'start', {
+                name: `Start`,
+                icon: 'mdi:play',
+                device_class: null,
+                availability: [lxcAvailability]
+            }),
+
+            [`${container.key}_stop`]: this.addButtonDiscovery(container.key,"lxc", 'stop', {
+                name: `Stop`,
+                icon: 'mdi:stop',
+                device_class: null,
+                availability: [lxcAvailability]
+            }),
+            
+            [`${container.key}_reboot`]: this.addButtonDiscovery(container.key,"lxc", 'reboot', {
+                name: `Reboot`,
+                icon: 'mdi:restart',
+                device_class: 'restart',
+                availability: [lxcAvailability]
+            }),
+            [`${container.key}_refresh`]: this.addButtonDiscovery(container.key,"lxc", 'refresh', {
+                name: `Refresh`,
+                icon: 'mdi:refresh',
+                device_class: null,
+                availability: [lxcAvailability]
+            })
+        };
+
+        try {
+            await this.mqtt.publishDeviceDiscovery(`lxc/${container.key}`, device);
+            logger.info(`Configuration de découverte publiée pour le conteneur ${container.name} (${container.vmid})`);
+        } catch (error) {
+            logger.error(`Erreur lors de la publication de la découverte pour le conteneur ${container.vmid}:`, error);
+        }
+    }
+
+    getContainerDeviceInfo(container) {
+        return {
+            identifiers: [`proxmox_${container.key}`],
+            name: `${container.name} (${container.vmid})`,
+            model: 'Proxmox LXC Container',
+            manufacturer: 'Proxmox',
+            sw_version: '1.0.0',
+            via_device: `proxmox_${container.node}`
+        };
+    }
+
+    async publishContainerAvailability(containerKey, status = 'online') {
+    const availabilityTopic = `${this.baseTopic}/lxc/${containerKey}/availability`;
+        try {
+            await this.mqtt.publish(availabilityTopic, status, { retain: true });
+        } catch (error) {
+            logger.error(`Erreur lors de la publication de la disponibilité pour le conteneur ${containerKey}:`, error);
         }
     }
 }

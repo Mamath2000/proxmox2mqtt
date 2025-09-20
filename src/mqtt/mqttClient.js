@@ -14,19 +14,17 @@ class MQTTClient extends EventEmitter {
     async connect() {
         return new Promise((resolve, reject) => {
             try {
-                // Génération d'un clientId unique pour éviter les conflits
+                // Génération d'un client ID unique
+                const randomSuffix = Math.random().toString(36).substring(7);
                 const timestamp = Date.now();
-                const random = Math.random().toString(36).substring(2, 8);
-                const uniqueClientId = `${this.config.clientId}_${timestamp}_${random}`;
-                
-                const options = {
-                    clientId: uniqueClientId,
-                    clean: true,
-                    connectTimeout: 30000,
-                    reconnectPeriod: 5000
-                };
+                const clientId = `${this.config.clientId}_${timestamp}_${randomSuffix}`;
 
-                logger.info(`Connexion MQTT avec clientId: ${uniqueClientId}`);
+                const options = {
+                    clientId: clientId,
+                    clean: true,
+                    connectTimeout: 4000,
+                    reconnectPeriod: 1000
+                };
 
                 if (this.config.username && this.config.password) {
                     options.username = this.config.username;
@@ -48,6 +46,12 @@ class MQTTClient extends EventEmitter {
                     logger.error('Erreur MQTT:', error.message);
                     reject(error);
                 });
+
+                this.client.on('close', () => {
+                    this.isConnected = false;
+                    logger.warn('Connexion MQTT fermée');
+                })
+                ;
 
                 this.client.on('offline', () => {
                     this.isConnected = false;
@@ -77,12 +81,22 @@ class MQTTClient extends EventEmitter {
     }
 
     subscribeToCommands() {
-        const commandTopic = `${this.baseTopic}/+/command/+`;
-        this.client.subscribe(commandTopic, (error) => {
-            if (error) {
-                logger.error('Erreur lors de l\'abonnement aux commandes:', error);
+        const nodeCommandTopic = `${this.baseTopic}/nodes/+/command`;
+        const containerCommandTopic = `${this.baseTopic}/lxc/+/command`;
+        
+        this.client.subscribe(nodeCommandTopic, (err) => {
+            if (err) {
+                logger.error('Erreur lors de l\'abonnement aux commandes des nœuds:', err);
             } else {
-                logger.info(`Abonné aux commandes: ${commandTopic}`);
+                logger.info(`Abonné aux commandes des nœuds: ${nodeCommandTopic}`);
+            }
+        });
+        
+        this.client.subscribe(containerCommandTopic, (err) => {
+            if (err) {
+                logger.error('Erreur lors de l\'abonnement aux commandes des conteneurs:', err);
+            } else {
+                logger.info(`Abonné aux commandes des conteneurs: ${containerCommandTopic}`);
             }
         });
     }
@@ -92,57 +106,107 @@ class MQTTClient extends EventEmitter {
             const payload = message.toString();
             logger.debug(`Message reçu sur ${topic}: ${payload}`);
             
-            if (topic.includes('/command/')) {
-                this.emit('command', topic, payload);
-            }
+            // Émettre l'événement pour que l'application principale puisse traiter la commande
+            this.emit('command', topic, payload);
         } catch (error) {
-            logger.error('Erreur lors du traitement du message:', error);
-        }
-    }
-
-    async publishNodeData(nodeName, data) {
-        if (!this.isConnected) {
-            logger.warn('MQTT non connecté, impossible de publier les données');
-            return;
-        }
-
-        const baseTopic = `${this.baseTopic}/${nodeName}`;
-        
-        try {
-            // Publication des capteurs séparément pour Home Assistant
-            await this.publish(`${baseTopic}`, JSON.stringify(data), { retain: true });
-
-            logger.debug(`Données publiées pour le nœud ${nodeName}`);
-        } catch (error) {
-            logger.error(`Erreur lors de la publication des données pour ${nodeName}:`, error);
+            logger.error('Erreur lors du traitement du message MQTT:', error);
         }
     }
 
     async publish(topic, message, options = {}) {
         return new Promise((resolve, reject) => {
             if (!this.isConnected) {
-                reject(new Error('MQTT non connecté'));
+                reject(new Error('Client MQTT non connecté'));
                 return;
             }
 
-            this.client.publish(topic, message, options, (error) => {
-                if (error) {
-                    reject(error);
+            this.client.publish(topic, message, options, (err) => {
+                if (err) {
+                    logger.error(`Erreur lors de la publication sur ${topic}:`, err);
+                    reject(err);
                 } else {
+                    logger.debug(`Message publié sur ${topic}`);
                     resolve();
                 }
             });
         });
     }
 
-    async publishDiscovery(entityType, nodeName, entityName, config) {
-        const discoveryTopic = `homeassistant/${entityType}/${nodeName}_${entityName}/config`;
-        
+    async publishNodeData(nodeName, data) {
         try {
-            await this.publish(discoveryTopic, JSON.stringify(config), { retain: true });
+            const baseTopic = `${this.baseTopic}/nodes/${nodeName}`;
+
+            // Publication des données complètes en JSON
+            await this.publish(baseTopic, JSON.stringify({
+                cpu_usage: data.cpu.usage,
+                cpu_cores: data.cpu.cores,
+                mem_usage: data.memory.usage,
+                mem_used: data.memory.used,
+                mem_total: data.memory.total,
+                disk_usage: data.disk.usage,
+                disk_used: data.disk.used,
+                disk_total: data.disk.total,
+                load1: data.load1,
+                load5: data.load5,
+                load15: data.load15,
+                ceph_status: data.ceph?.status || 'unknown',
+                ceph_usage: data.ceph?.usage || 0,
+                ceph_used: data.ceph?.used || 0,
+                ceph_total: data.ceph?.total || 0,
+                uptime: data.uptime,
+                last_update: data.lastUpdate
+            }), { retain: true });
+
+            logger.debug(`Données publiées pour le nœud ${nodeName}`);
+        } catch (error) {
+            logger.error(`Erreur lors de la publication des données du nœud ${nodeName}:`, error);
+        }
+    }
+
+    async publishContainerData(containerName, data) {
+        try {
+            const containerKey = `${data.vmid}_${data.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`;
+            const baseTopic = `${this.baseTopic}/lxc/${containerKey}`;
+
+            // Publication des données complètes en JSON
+            await this.publish(baseTopic, JSON.stringify({
+                state: data.status,
+                name: data.name,
+                tags: data.tags,
+                vmid: data.vmid,
+                node: data.node,
+                cpu_usage: data.cpu.usage,
+                cpu_cores: data.cpu.cores,
+                mem_usage: data.memory.usage,
+                mem_used: data.memory.used,
+                mem_total: data.memory.total,
+                disk_usage: data.disk.usage,
+                disk_used: data.disk.used,
+                disk_total: data.disk.total,
+                swap_usage: data.swap?.usage || 0,
+                swap_used: data.swap?.used || 0,
+                swap_total: data.swap?.total || 0,
+                net_in: data.network.in,
+                net_out: data.network.out,
+                uptime: data.uptime,
+                last_update: data.lastUpdate
+            }), { retain: true });
+
+            logger.debug(`Données publiées pour le conteneur ${containerName}`);
+        } catch (error) {
+            logger.error(`Erreur lors de la publication des données du conteneur ${containerName}:`, error);
+        }
+    }
+
+    async publishDeviceDiscovery(entityName, discoveryConfig) {
+        try {
+            const discoveryTopic = `homeassistant/device/${entityName}/config`;
+            const payload = JSON.stringify(discoveryConfig);
+            
+            await this.publish(discoveryTopic, payload, { retain: true });
             logger.debug(`Configuration découverte publiée: ${discoveryTopic}`);
         } catch (error) {
-            logger.error(`Erreur lors de la publication de la découverte pour ${entityType}:`, error);
+            logger.error(`Erreur lors de la publication de la découverte pour ${entityName}:`, error);
         }
     }
 }

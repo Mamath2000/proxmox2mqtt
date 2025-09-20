@@ -24,17 +24,18 @@ class Proxmox2MQTT {
         this.discovery = new HomeAssistantDiscovery(this.mqtt);
         this.updateInterval = parseInt(process.env.UPDATE_INTERVAL) || 30000;
         this.nodes = new Map();
+        this.containers = new Map(); // Pour stocker les conteneurs découverts
         this.updateTimer = null;
     }
 
     async start() {
         try {
             logger.info('Démarrage de Proxmox2MQTT...');
-            
+
             // Connexion aux services
             await this.proxmox.connect();
             logger.info('Connexion à Proxmox établie');
-            
+
             await this.mqtt.connect();
             logger.info('Connexion MQTT établie');
 
@@ -43,6 +44,9 @@ class Proxmox2MQTT {
 
             // Découverte initiale des nœuds
             await this.discoverNodes();
+
+            // Découverte initiale des conteneurs
+            await this.discoverContainers();
 
             // Démarrage de la mise à jour périodique
             this.startPeriodicUpdate();
@@ -56,7 +60,7 @@ class Proxmox2MQTT {
 
     async stop() {
         logger.info('Arrêt de Proxmox2MQTT...');
-        
+
         try {
             // Arrêter la mise à jour périodique
             if (this.updateTimer) {
@@ -80,7 +84,7 @@ class Proxmox2MQTT {
         } catch (error) {
             logger.error('Erreur lors de l\'arrêt:', error);
         }
-        
+
         // Forcer l'arrêt si nécessaire
         setTimeout(() => {
             process.exit(0);
@@ -127,27 +131,70 @@ class Proxmox2MQTT {
         }
     }
 
-    async updateNodeData() {
+    async discoverContainers() {
         try {
-            logger.debug(`Mise à jour des données pour ${this.nodes.size} nœuds`);
-            
-            // // Récupérer les données de stockage Ceph une seule fois (partagées par tous les nœuds)
-            // const storageData = await this.proxmox.getStorageStatus(nodeName);
-            
+            logger.info('Découverte des conteneurs LXC...');
+            let totalContainers = 0;
+
             for (const [nodeName] of this.nodes) {
                 try {
+                    const containers = await this.proxmox.getContainers(nodeName);
+
+                    for (const container of containers) {
+                        // Récupérer les détails complets du conteneur
+                        const containerDetails = await this.proxmox.getContainerStatus(nodeName, container.vmid);
+
+                        if (containerDetails.isIgnore) {
+                            logger.info(`Conteneur ${containerDetails.key} ignoré par Home Assistant`);
+                        } else {
+                            if (!this.containers.has(containerDetails.key)) {
+                                logger.info(`Nouveau conteneur découvert: ${containerDetails.name} (${container.vmid}) sur ${nodeName}`);
+                            }
+
+                            this.containers.set(containerDetails.key, {
+                                ...containerDetails,
+                                node: nodeName,
+                                vmid: container.vmid
+                            });
+
+                            await this.discovery.publishContainerDiscovery(containerDetails);
+                            await this.discovery.publishContainerAvailability(containerDetails.key, 'online');
+                            totalContainers++;
+                        }
+                    }
+                } catch (nodeError) {
+                    logger.error(`Erreur lors de la découverte des conteneurs sur ${nodeName}:`, nodeError.message);
+                }
+            }
+
+            logger.info(`${totalContainers} conteneurs découverts`);
+        } catch (error) {
+            logger.error('Erreur lors de la découverte des conteneurs:', error);
+        }
+    }
+
+    async updateNodeData(node = 'all') {
+        try {
+            logger.debug(`Mise à jour des données pour ${this.nodes.size} nœuds`);
+
+            // // Récupérer les données de stockage Ceph une seule fois (partagées par tous les nœuds)
+            // const storageData = await this.proxmox.getStorageStatus(nodeName);
+            const nodesToUpdate = node === 'all' ? Array.from(this.nodes.keys()) : [node];
+
+            for (const nodeName of nodesToUpdate) {
+                try {
                     const nodeData = await this.proxmox.getNodeStatus(nodeName);
-                    
+
                     if (nodeData) {
                         // // Ajouter les données de stockage aux données du nœud
                         // nodeData.storage = storageData;
-                        
+
                         await this.mqtt.publishNodeData(nodeName, nodeData);
-                        
+
                         // Publier la disponibilité
                         const availability = nodeData.error ? 'offline' : 'online';
                         await this.discovery.publishAvailability(nodeName, availability);
-                        
+
                         logger.debug(`Données mises à jour pour le nœud ${nodeName} (${availability})`);
                     } else {
                         logger.warn(`Nœud ${nodeName} ignoré - non trouvé dans le cluster`);
@@ -158,30 +205,110 @@ class Proxmox2MQTT {
                     await this.discovery.publishAvailability(nodeName, 'offline');
                 }
             }
+
+            // Mise à jour des conteneurs
+            if (node === 'all') await this.updateAllContainerData();
         } catch (error) {
             logger.error('Erreur générale lors de la mise à jour des données:', error);
         }
     }
 
+    async updateAllContainerData() {
+        try {
+            logger.debug(`Mise à jour des données pour ${this.containers.size} conteneurs`);
+
+            for (const [containerKey] of this.containers) {
+                await this.updateContainerData(containerKey);
+            }
+        } catch (error) {
+            logger.error('Erreur générale lors de la mise à jour des conteneurs:', error);
+        }
+    }
+
+    async updateContainerData(containerKey) {
+        try {
+            logger.debug(`Mise à jour des données pour le conteneur ${containerKey}`);
+
+            const containerInfo = this.containers.get(containerKey);
+            if (!containerInfo) {
+                logger.error(`Conteneur ${containerKey} non trouvé`);
+                return;
+            }
+
+            const containerData = await this.proxmox.getContainerStatus(containerInfo.node, containerInfo.vmid);
+            if (containerData && !containerInfo.isIgnore) {
+                await this.mqtt.publishContainerData(containerKey, containerData);
+
+                // Publier la disponibilité
+                const availability = containerData.error ? 'offline' : 'online';
+                await this.discovery.publishContainerAvailability(containerKey, availability);
+
+                logger.debug(`Données mises à jour pour le conteneur ${containerData.name} (${availability})`);
+            } else {
+                logger.warn(`Conteneur ${containerKey} ignoré ou non trouvé`);
+                await this.discovery.publishContainerAvailability(containerKey, 'offline');
+            }
+        } catch (error) {
+            logger.error('Erreur générale lors de la mise à jour des conteneurs:', error);
+        }
+    }
+
     async handleCommand(topic, payload) {
         try {
-            JSON.parse(payload); // Valider le JSON
-            const [, , nodeName, action] = topic.split('/');
+            const jpayload = JSON.parse(payload); // Valider le JSON
+            const topicParts = topic.split('/');
 
-            logger.info(`Commande reçue: ${action} pour le nœud ${nodeName}`);
+            // Déterminer si c'est une commande pour un nœud ou un conteneur
+            if (topicParts[1] === 'lxc') {
+                // Commande pour un conteneur: proxmox2mqtt/lxc/{containerName}/command/{action}
+                const containerKey = topicParts[2];
+                const action = jpayload.action;
 
-            switch (action) {
-            case 'restart':
-                await this.proxmox.restartNode(nodeName);
-                break;
-            case 'shutdown':
-                await this.proxmox.shutdownNode(nodeName);
-                break;
-            case 'refresh':
-                await this.updateNodeData();
-                break;
-            default:
-                logger.warn(`Action inconnue: ${action}`);
+                logger.info(`Commande reçue: ${action} pour le conteneur ${containerKey}`);
+
+                // Récupérer les informations du conteneur
+                const containerInfo = this.containers.get(containerKey);
+                if (!containerInfo) {
+                    logger.error(`Conteneur ${containerKey} non trouvé`);
+                    return;
+                }
+
+                switch (action) {
+                    case 'start':
+                        await this.proxmox.startContainer(containerInfo.node, containerInfo.vmid);
+                        break;
+                    case 'stop':
+                        await this.proxmox.stopContainer(containerInfo.node, containerInfo.vmid);
+                        break;
+                    case 'reboot':
+                        await this.proxmox.rebootContainer(containerInfo.node, containerInfo.vmid);
+                        break;
+                    case 'refresh':
+                        await this.updateContainerData(containerKey);
+                        break;
+                    default:
+                        logger.warn(`Action inconnue pour conteneur: ${action}`);
+                }
+            } else if (topicParts[1] === 'nodes') {
+                // Commande pour un nœud: proxmox2mqtt/nodes/{nodeName}/command
+                const nodeName = topicParts[2];
+                const action = jpayload.action;
+
+                logger.info(`Commande reçue: ${action} pour le nœud ${nodeName}`);
+
+                switch (action) {
+                    case 'restart':
+                        await this.proxmox.restartNode(nodeName);
+                        break;
+                    case 'shutdown':
+                        await this.proxmox.shutdownNode(nodeName);
+                        break;
+                    case 'refresh':
+                        await this.updateNodeData(nodeName);
+                        break;
+                    default:
+                        logger.warn(`Action inconnue pour nœud: ${action}`);
+                }
             }
         } catch (error) {
             logger.error('Erreur lors du traitement de la commande:', error);
