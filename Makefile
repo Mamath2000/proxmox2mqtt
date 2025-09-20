@@ -23,8 +23,8 @@ NC = \033[0m # No Color
 help: ## Affiche ce menu d'aide
 	@echo ""
 	@echo "$(CYAN)╭─────────────────────────────────────────╮$(NC)"
-	@echo "$(CYAN)│           $(WHITE)PROXMOX2MQTT$(CYAN)                │$(NC)"
-	@echo "$(CYAN)│     Pont Proxmox ↔ Home Assistant      │$(NC)"
+	@echo "$(CYAN)│           $(WHITE)PROXMOX2MQTT$(CYAN)                   │$(NC)"
+	@echo "$(CYAN)│     Pont Proxmox ↔ Home Assistant       │$(NC)"
 	@echo "$(CYAN)╰─────────────────────────────────────────╯$(NC)"
 	@echo ""
 	@echo "$(YELLOW)📋 Commandes disponibles:$(NC)"
@@ -66,17 +66,6 @@ install: ## Installe les dépendances NPM
 setup: install setup-env setup-logs ## Configuration complète du projet
 	@echo "$(GREEN)✅ Configuration du projet terminée !$(NC)"
 
-.PHONY: setup-env
-setup-env: ## Configure le fichier d'environnement
-	@echo "$(CYAN)⚙️  Configuration de l'environnement...$(NC)"
-	@if [ ! -f $(ENV_FILE) ]; then \
-		cp .env.example $(ENV_FILE); \
-		echo "$(YELLOW)⚠️  Fichier $(ENV_FILE) créé depuis .env.example$(NC)"; \
-		echo "$(YELLOW)   Pensez à modifier les valeurs selon votre configuration !$(NC)"; \
-	else \
-		echo "$(GREEN)✓ Fichier $(ENV_FILE) déjà présent$(NC)"; \
-	fi
-
 .PHONY: setup-logs
 setup-logs: ## Crée le dossier des logs
 	@echo "$(CYAN)📋 Configuration des logs...$(NC)"
@@ -91,24 +80,31 @@ start: ## Démarre l'application en mode production
 		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
 		exit 1; \
 	fi
-	@if pgrep -f "node src/index.js" > /dev/null; then \
-		echo "$(YELLOW)⚠️  Une instance est déjà en cours d'exécution$(NC)"; \
-		echo "$(YELLOW)   Utilisez 'make stop' pour l'arrêter d'abord$(NC)"; \
-		exit 1; \
-	fi
+# 	@if [ -f $(LOG_DIR)/proxmox2mqtt.pid ] && ps -p $$(cat $(LOG_DIR)/proxmox2mqtt.pid) > /dev/null 2>&1; then \
+# 		echo "$(YELLOW)⚠️  Une instance est déjà en cours d'exécution (PID: $$(cat $(LOG_DIR)/proxmox2mqtt.pid))$(NC)"; \
+# 		echo "$(YELLOW)   Utilisez 'make stop' pour l'arrêter d'abord$(NC)"; \
+# 		exit 1; \
+# 	elif pgrep -f "node src/index.js" > /dev/null; then \
+# 		echo "$(YELLOW)⚠️  Une instance est déjà en cours d'exécution$(NC)"; \
+# 		echo "$(YELLOW)   Utilisez 'make stop' pour l'arrêter d'abord$(NC)"; \
+# 		exit 1; \
+# 	fi
+	@rm -f $(LOG_DIR)/proxmox2mqtt.pid
 	npm start
 
-.PHONY: start-daemon
-start-daemon: ## Démarre l'application en arrière-plan
-	@echo "$(CYAN)🚀 Démarrage de $(PROJECT_NAME) en arrière-plan...$(NC)"
+.PHONY: start-force
+start-force: ## Démarre l'application en forçant l'arrêt des instances existantes
+	@echo "$(CYAN)🚀 Démarrage forcé de $(PROJECT_NAME)...$(NC)"
 	@if [ ! -f $(ENV_FILE) ]; then \
 		echo "$(RED)❌ Fichier $(ENV_FILE) manquant !$(NC)"; \
 		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
 		exit 1; \
 	fi
-	@nohup npm start > $(LOG_DIR)/proxmox2mqtt.log 2>&1 & echo $$! > $(LOG_DIR)/proxmox2mqtt.pid
-	@echo "$(GREEN)✓ Application démarrée en arrière-plan (PID: $$(cat $(LOG_DIR)/proxmox2mqtt.pid))$(NC)"
-	@echo "$(BLUE)   Utilisez 'make logs-live' pour suivre les logs$(NC)"
+	@echo "$(YELLOW)⚠️  Arrêt des instances existantes...$(NC)"
+	@-pkill -f "node.*src/index.js" 2>/dev/null || true
+	@sleep 2
+	@echo "$(GREEN)✅ Démarrage de l'application...$(NC)"
+	@npm start
 
 .PHONY: dev
 dev: ## Démarre l'application en mode développement (avec auto-reload)
@@ -119,26 +115,6 @@ dev: ## Démarre l'application en mode développement (avec auto-reload)
 		exit 1; \
 	fi
 	npm run dev
-
-.PHONY: debug
-debug: ## Démarre en mode debug avec logs détaillés
-	@echo "$(CYAN)🐛 Démarrage en mode debug...$(NC)"
-	@if [ ! -f $(ENV_FILE) ]; then \
-		echo "$(RED)❌ Fichier $(ENV_FILE) manquant !$(NC)"; \
-		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
-		exit 1; \
-	fi
-	LOG_LEVEL=debug npm start
-
-.PHONY: debug-dev
-debug-dev: ## Démarre en mode développement avec logs détaillés
-	@echo "$(CYAN)🐛 Démarrage en mode développement debug...$(NC)"
-	@if [ ! -f $(ENV_FILE) ]; then \
-		echo "$(RED)❌ Fichier $(ENV_FILE) manquant !$(NC)"; \
-		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
-		exit 1; \
-	fi
-	LOG_LEVEL=debug npm run dev
 
 .PHONY: test-connection
 test-connection: ## Teste la connexion Proxmox sans démarrer l'app
@@ -164,37 +140,6 @@ test-connection: ## Teste la connexion Proxmox sans démarrer l'app
 			process.exit(1); \
 		}); \
 	"
-
-.PHONY: test-node
-test-node: ## Teste l'API d'un nœud spécifique (usage: make test-node NODE=pve1)
-	@echo "$(CYAN)🔍 Test du nœud $(or $(NODE),pve1)...$(NC)"
-	@node -e " \
-		require('dotenv').config(); \
-		const ProxmoxAPI = require('./src/proxmox/proxmoxAPI'); \
-		const api = new ProxmoxAPI({ \
-			host: process.env.PROXMOX_HOST, \
-			user: process.env.PROXMOX_USER, \
-			password: process.env.PROXMOX_PASSWORD, \
-			realm: process.env.PROXMOX_REALM || 'pam', \
-			port: process.env.PROXMOX_PORT || 8006 \
-		}); \
-		const nodeName = '$(or $(NODE),pve1)'; \
-		api.connect().then(() => { \
-			console.log('✅ Connexion Proxmox réussie'); \
-			return api.getNodeStatus(nodeName); \
-		}).then(status => { \
-			console.log('📊 Statut du nœud ' + nodeName + ':', JSON.stringify(status, null, 2)); \
-			process.exit(0); \
-		}).catch(err => { \
-			console.error('❌ Erreur pour le nœud ' + nodeName + ':', err.message); \
-			process.exit(1); \
-		}); \
-	"
-
-.PHONY: test
-test: ## Exécute les tests (placeholder)
-	@echo "$(CYAN)🧪 Exécution des tests...$(NC)"
-	npm test
 
 .PHONY: lint
 lint: ## Vérifie la qualité du code avec ESLint
@@ -275,12 +220,6 @@ stop: ## Arrête l'application
 	else \
 		echo "$(YELLOW)⚠️  Aucun processus $(PROJECT_NAME) trouvé$(NC)"; \
 	fi
-
-.PHONY: stop-all
-stop-all: ## Arrête toutes les instances Node.js liées au projet
-	@echo "$(CYAN)🛑 Arrêt de toutes les instances...$(NC)"
-	@pkill -f "proxmox2mqtt" || echo "$(YELLOW)⚠️  Aucun processus trouvé$(NC)"
-	@echo "$(GREEN)✓ Toutes les instances arrêtées$(NC)"
 
 .PHONY: ps
 ps: ## Affiche les processus Node.js en cours

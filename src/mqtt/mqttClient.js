@@ -110,57 +110,7 @@ class MQTTClient extends EventEmitter {
         
         try {
             // Publication des capteurs séparément pour Home Assistant
-            await this.publish(`${baseTopic}/state`, JSON.stringify({
-                state: data.status,
-                attributes: {
-                    uptime: data.uptime,
-                    last_update: data.lastUpdate
-                }
-            }), { retain: true });
-
-            await this.publish(`${baseTopic}/cpu/state`, data.cpu.usage.toString(), { retain: true });
-            await this.publish(`${baseTopic}/cpu/attributes`, JSON.stringify({
-                cores: data.cpu.cores,
-                usage_percent: data.cpu.usage
-            }), { retain: true });
-
-            await this.publish(`${baseTopic}/memory/state`, (data.memory.usage || 0).toString(), { retain: true });
-            await this.publish(`${baseTopic}/memory/attributes`, JSON.stringify({
-                used_bytes: data.memory.used || 0,
-                total_bytes: data.memory.total || 0,
-                usage_percent: data.memory.usage || 0
-            }), { retain: true });
-
-            await this.publish(`${baseTopic}/disk/state`, (data.disk.usage || 0).toString(), { retain: true });
-            await this.publish(`${baseTopic}/disk/attributes`, JSON.stringify({
-                used_bytes: data.disk.used || 0,
-                total_bytes: data.disk.total || 0,
-                usage_percent: data.disk.usage || 0
-            }), { retain: true });
-
-            // Publication des métriques de charge système (load average)
-            await this.publish(`${baseTopic}/load1/state`, (data.load1 || 0).toString(), { retain: true });
-            await this.publish(`${baseTopic}/load5/state`, (data.load5 || 0).toString(), { retain: true });
-            await this.publish(`${baseTopic}/load15/state`, (data.load15 || 0).toString(), { retain: true });
-            
-            // Compatibilité : publier load1 comme load pour les anciennes configurations
-            await this.publish(`${baseTopic}/load/state`, (data.load1 || 0).toString(), { retain: true });
-
-            // Publication des données de stockage Ceph
-            if (data.ceph) {
-                const cephData = data.ceph;
-                await this.publish(`${baseTopic}/ceph/state`, cephData.status, { retain: true });
-                await this.publish(`${baseTopic}/ceph/usage`, (cephData.usage || 0).toString(), { retain: true });
-                await this.publish(`${baseTopic}/ceph/attributes`, JSON.stringify({
-                    status: cephData.status,
-                    usage_percent: cephData.usage || 0,
-                    used_bytes: cephData.used || 0,
-                    total_bytes: cephData.total || 0,
-                    available_bytes: cephData.available || 0,
-                    storage_type: cephData.type || 'unknown',
-                    storage_id: cephData.storage_id || 'unknown'
-                }), { retain: true });
-            }
+            await this.publish(`${baseTopic}`, JSON.stringify(data), { retain: true });
 
             logger.debug(`Données publiées pour le nœud ${nodeName}`);
         } catch (error) {

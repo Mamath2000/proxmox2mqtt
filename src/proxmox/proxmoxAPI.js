@@ -95,27 +95,23 @@ class ProxmoxAPI {
 
             return {
                 node: nodeName,
-                status: statusData.uptime > 0 ? 'online' : 'offline',
+                state: statusData.uptime > 0 ? 'online' : 'offline',
                 uptime: statusData.uptime || 0,
-                cpu: {
-                    usage: cpuUsage,
-                    cores: statusData.cpuinfo ? statusData.cpuinfo.cpus : 0
-                },
-                memory: {
-                    used: statusData.memory ? statusData.memory.used : 0,
-                    total: statusData.memory ? statusData.memory.total : 0,
-                    usage: memoryUsage
-                },
-                disk: {
-                    used: statusData.rootfs ? statusData.rootfs.used : 0,
-                    total: statusData.rootfs ? statusData.rootfs.total : 0,
-                    usage: diskUsage
-                },
+                cpu_usage: cpuUsage,
+                cpu_cores: statusData.cpuinfo ? statusData.cpuinfo.cpus : 0,
+                mem_used: statusData.memory ? statusData.memory.used : 0,
+                mem_total: statusData.memory ? statusData.memory.total : 0,
+                mem_usage: memoryUsage,
+                disk_used: statusData.rootfs ? statusData.rootfs.used : 0,
+                disk_total: statusData.rootfs ? statusData.rootfs.total : 0,
+                disk_usage: diskUsage,
                 load1: statusData.loadavg ? statusData.loadavg[0] : 0,
                 load5: statusData.loadavg ? statusData.loadavg[1] : 0,
                 load15: statusData.loadavg ? statusData.loadavg[2] : 0,
-                ceph: storageData.ceph,
-                // storage: { ceph: { status: 'unknown', usage: 0, used: 0, total: 0 } },
+                ceph_used: storageData.ceph.used,
+                ceph_total: storageData.ceph.total,
+                ceph_usage: storageData.ceph.usage,
+                ceph_status: storageData.ceph.status,
                 lastUpdate: new Date().toISOString()
             };
         } catch (error) {
@@ -127,20 +123,7 @@ class ProxmoxAPI {
             });
             
             // Retourner des données par défaut plutôt que de faire planter l'application
-            return {
-                node: nodeName,
-                status: 'error',
-                uptime: 0,
-                cpu: { usage: 0, cores: 0 },
-                memory: { used: 0, total: 0, usage: 0 },
-                disk: { used: 0, total: 0, usage: 0 },
-                load1: 0,
-                load5: 0,
-                load15: 0,
-                storage: { ceph: { status: 'error', usage: 0, used: 0, total: 0 } },
-                lastUpdate: new Date().toISOString(),
-                error: error.message
-            };
+            return {};
         }
     }
 
