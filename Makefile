@@ -13,7 +13,6 @@ RED = \033[0;31m
 GREEN = \033[0;32m
 YELLOW = \033[0;33m
 BLUE = \033[0;34m
-PURPLE = \033[0;35m
 CYAN = \033[0;36m
 WHITE = \033[0;37m
 NC = \033[0m # No Color
@@ -23,7 +22,7 @@ NC = \033[0m # No Color
 help: ## Affiche ce menu d'aide
 	@echo ""
 	@echo "$(CYAN)╭─────────────────────────────────────────╮$(NC)"
-	@echo "$(CYAN)│           $(WHITE)PROXMOX2MQTT$(CYAN)                   │$(NC)"
+	@echo "$(CYAN)│           $(WHITE)PROXMOX2MQTT$(CYAN)                  │$(NC)"
 	@echo "$(CYAN)│     Pont Proxmox ↔ Home Assistant       │$(NC)"
 	@echo "$(CYAN)╰─────────────────────────────────────────╯$(NC)"
 	@echo ""
@@ -36,43 +35,17 @@ help: ## Affiche ce menu d'aide
 	@echo "   NPM:     $(GREEN)$(NPM_VERSION)$(NC)"
 	@echo ""
 
-.PHONY: status
-status: ## Affiche le statut du projet
-	@echo "$(CYAN)📊 Statut du projet $(PROJECT_NAME)$(NC)"
-	@echo ""
-	@echo "$(YELLOW)🔧 Environnement:$(NC)"
-	@echo "   Node.js: $(if $(shell which node),$(GREEN)✓$(NC) $(NODE_VERSION),$(RED)✗ Non installé$(NC))"
-	@echo "   NPM:     $(if $(shell which npm),$(GREEN)✓$(NC) $(NPM_VERSION),$(RED)✗ Non installé$(NC))"
-	@echo ""
-	@echo "$(YELLOW)📁 Fichiers de configuration:$(NC)"
-	@echo "   package.json: $(if $(wildcard package.json),$(GREEN)✓$(NC),$(RED)✗$(NC))"
-	@echo "   $(ENV_FILE):        $(if $(wildcard $(ENV_FILE)),$(GREEN)✓$(NC),$(YELLOW)⚠ Manquant$(NC))"
-	@echo "   eslint.config.js: $(if $(wildcard eslint.config.js),$(GREEN)✓$(NC),$(RED)✗$(NC))"
-	@echo ""
-	@echo "$(YELLOW)📂 Dossiers:$(NC)"
-	@echo "   src/:     $(if $(wildcard src/),$(GREEN)✓$(NC),$(RED)✗$(NC))"
-	@echo "   logs/:    $(if $(wildcard $(LOG_DIR)/),$(GREEN)✓$(NC),$(RED)✗$(NC))"
-	@echo ""
-	@echo "$(YELLOW)📦 Dépendances:$(NC)"
-	@echo "   node_modules: $(if $(wildcard node_modules/),$(GREEN)✓ Installées$(NC),$(RED)✗ Non installées$(NC))"
-
-.PHONY: build
-build: ## Build et publie l'image Docker (avec gestion de version)
-	@echo "$(CYAN)🔨 Lancement du build Docker...$(NC)"
-	@./scripts/build.sh
-	@echo "$(GREEN)✅ Build terminé !$(NC)"
-
 .PHONY: build-push
 build-push: ## Build et pousse l'image vers Docker Hub
 	@echo "$(CYAN)🔨 Build et push vers Docker Hub...$(NC)"
 	@./scripts/build.sh --push
 	@echo "$(GREEN)✅ Build et push terminés !$(NC)"
 
-.PHONY: build-local
-build-local: ## Build local sans incrément de version
-	@echo "$(CYAN)🔨 Build local...$(NC)"
-	@./scripts/build.sh --no-increment
-	@echo "$(GREEN)✅ Build local terminé !$(NC)"
+.PHONY: build
+build: ## Build l'image Docker avec incrément de version
+	@echo "$(CYAN)🔨 Lancement du build Docker...$(NC)"
+	@./scripts/build.sh
+	@echo "$(GREEN)✅ Build terminé !$(NC)"
 
 .PHONY: install
 install: ## Installe les dépendances NPM
@@ -80,101 +53,26 @@ install: ## Installe les dépendances NPM
 	npm install
 	@echo "$(GREEN)✓ Dépendances installées avec succès$(NC)"
 
-.PHONY: setup
-setup: install setup-env setup-logs ## Configuration complète du projet
-	@echo "$(GREEN)✅ Configuration du projet terminée !$(NC)"
-
-.PHONY: setup-logs
-setup-logs: ## Crée le dossier des logs
-	@echo "$(CYAN)📋 Configuration des logs...$(NC)"
-	@mkdir -p $(LOG_DIR)
-	@echo "$(GREEN)✓ Dossier $(LOG_DIR)/ configuré$(NC)"
-
 .PHONY: start
 start: ## Démarre l'application en mode production
 	@echo "$(CYAN)🚀 Démarrage de $(PROJECT_NAME)...$(NC)"
 	@if [ ! -f $(ENV_FILE) ]; then \
 		echo "$(RED)❌ Fichier $(ENV_FILE) manquant !$(NC)"; \
-		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
+		echo "$(YELLOW)   Copiez .env.example vers .env et configurez$(NC)"; \
 		exit 1; \
 	fi
-# 	@if [ -f $(LOG_DIR)/proxmox2mqtt.pid ] && ps -p $$(cat $(LOG_DIR)/proxmox2mqtt.pid) > /dev/null 2>&1; then \
-# 		echo "$(YELLOW)⚠️  Une instance est déjà en cours d'exécution (PID: $$(cat $(LOG_DIR)/proxmox2mqtt.pid))$(NC)"; \
-# 		echo "$(YELLOW)   Utilisez 'make stop' pour l'arrêter d'abord$(NC)"; \
-# 		exit 1; \
-# 	elif pgrep -f "node src/index.js" > /dev/null; then \
-# 		echo "$(YELLOW)⚠️  Une instance est déjà en cours d'exécution$(NC)"; \
-# 		echo "$(YELLOW)   Utilisez 'make stop' pour l'arrêter d'abord$(NC)"; \
-# 		exit 1; \
-# 	fi
 	@rm -f $(LOG_DIR)/proxmox2mqtt.pid
 	npm start
-
-.PHONY: start-force
-start-force: ## Démarre l'application en forçant l'arrêt des instances existantes
-	@echo "$(CYAN)🚀 Démarrage forcé de $(PROJECT_NAME)...$(NC)"
-	@if [ ! -f $(ENV_FILE) ]; then \
-		echo "$(RED)❌ Fichier $(ENV_FILE) manquant !$(NC)"; \
-		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
-		exit 1; \
-	fi
-	@echo "$(YELLOW)⚠️  Arrêt des instances existantes...$(NC)"
-	@-pkill -f "node.*src/index.js" 2>/dev/null || true
-	@sleep 2
-	@echo "$(GREEN)✅ Démarrage de l'application...$(NC)"
-	@npm start
 
 .PHONY: dev
 dev: ## Démarre l'application en mode développement (avec auto-reload)
 	@echo "$(CYAN)🔧 Démarrage en mode développement...$(NC)"
 	@if [ ! -f $(ENV_FILE) ]; then \
 		echo "$(RED)❌ Fichier $(ENV_FILE) manquant !$(NC)"; \
-		echo "$(YELLOW)   Utilisez 'make setup-env' pour le créer$(NC)"; \
+		echo "$(YELLOW)   Copiez .env.example vers .env et configurez$(NC)"; \
 		exit 1; \
 	fi
 	npm run dev
-
-.PHONY: test-connection
-test-connection: ## Teste la connexion Proxmox sans démarrer l'app
-	@echo "$(CYAN)🔌 Test de connexion Proxmox...$(NC)"
-	@node -e " \
-		require('dotenv').config(); \
-		const ProxmoxAPI = require('./src/proxmox/proxmoxAPI'); \
-		const api = new ProxmoxAPI({ \
-			host: process.env.PROXMOX_HOST, \
-			user: process.env.PROXMOX_USER, \
-			password: process.env.PROXMOX_PASSWORD, \
-			realm: process.env.PROXMOX_REALM || 'pam', \
-			port: process.env.PROXMOX_PORT || 8006 \
-		}); \
-		api.connect().then(() => { \
-			console.log('✅ Connexion Proxmox réussie'); \
-			return api.getNodes(); \
-		}).then(nodes => { \
-			console.log('📊 Nœuds disponibles:', nodes.map(n => n.node).join(', ')); \
-			process.exit(0); \
-		}).catch(err => { \
-			console.error('❌ Erreur de connexion:', err.message); \
-			process.exit(1); \
-		}); \
-	"
-
-.PHONY: lint
-lint: ## Vérifie la qualité du code avec ESLint
-	@echo "$(CYAN)🔍 Vérification du code avec ESLint...$(NC)"
-	npm run lint
-
-.PHONY: lint-fix
-lint-fix: ## Corrige automatiquement les erreurs ESLint
-	@echo "$(CYAN)🔧 Correction automatique du code...$(NC)"
-	npm run lint:fix
-	@echo "$(GREEN)✓ Code corrigé automatiquement$(NC)"
-
-.PHONY: check
-check: lint ## Vérifie la syntaxe et la qualité du code
-	@echo "$(CYAN)✅ Vérification de la syntaxe Node.js...$(NC)"
-	node --check src/index.js
-	@echo "$(GREEN)✓ Syntaxe valide$(NC)"
 
 .PHONY: logs
 logs: ## Affiche les logs récents
@@ -185,23 +83,13 @@ logs: ## Affiche les logs récents
 		echo "$(YELLOW)⚠️  Aucun log trouvé dans $(LOG_DIR)/$(NC)"; \
 	fi
 
-.PHONY: logs-error
-logs-error: ## Affiche les logs d'erreur récents
-	@echo "$(CYAN)🚨 Logs d'erreur récents:$(NC)"
-	@if [ -f $(LOG_DIR)/error.log ]; then \
-		tail -n 10 $(LOG_DIR)/error.log; \
-	else \
-		echo "$(YELLOW)⚠️  Aucun log d'erreur trouvé$(NC)"; \
-	fi
-
-.PHONY: logs-live
-logs-live: ## Suit les logs en temps réel
-	@echo "$(CYAN)📺 Suivi des logs en temps réel (Ctrl+C pour arrêter):$(NC)"
-	@if [ -f $(LOG_DIR)/proxmox2mqtt.log ]; then \
-		tail -f $(LOG_DIR)/proxmox2mqtt.log; \
-	else \
-		echo "$(YELLOW)⚠️  Aucun log trouvé. Démarrez l'application d'abord.$(NC)"; \
-	fi
+.PHONY: check
+check: ## Vérifie la syntaxe et la qualité du code
+	@echo "$(CYAN)🔍 Vérification du code avec ESLint...$(NC)"
+	npm run lint
+	@echo "$(CYAN)✅ Vérification de la syntaxe Node.js...$(NC)"
+	node --check src/index.js
+	@echo "$(GREEN)✓ Code vérifié avec succès$(NC)"
 
 .PHONY: clean-logs
 clean-logs: ## Supprime tous les logs
@@ -216,45 +104,6 @@ clean: clean-logs ## Nettoyage complet (logs + node_modules)
 	@rm -f package-lock.json
 	@echo "$(GREEN)✓ Nettoyage terminé$(NC)"
 
-.PHONY: restart
-restart: ## Redémarre l'application (stop + start)
-	@echo "$(CYAN)🔄 Redémarrage de $(PROJECT_NAME)...$(NC)"
-	@pkill -f "node src/index.js" || true
-	@sleep 2
-	@make start
-
-.PHONY: stop
-stop: ## Arrête l'application
-	@echo "$(CYAN)🛑 Arrêt de $(PROJECT_NAME)...$(NC)"
-	@if pgrep -f "node src/index.js" > /dev/null; then \
-		echo "$(YELLOW)   Envoi du signal SIGTERM...$(NC)"; \
-		pkill -TERM -f "node src/index.js"; \
-		sleep 3; \
-		if pgrep -f "node src/index.js" > /dev/null; then \
-			echo "$(YELLOW)   Arrêt forcé (SIGKILL)...$(NC)"; \
-			pkill -KILL -f "node src/index.js"; \
-		fi; \
-		echo "$(GREEN)✓ Application arrêtée$(NC)"; \
-	else \
-		echo "$(YELLOW)⚠️  Aucun processus $(PROJECT_NAME) trouvé$(NC)"; \
-	fi
-
-.PHONY: ps
-ps: ## Affiche les processus Node.js en cours
-	@echo "$(CYAN)📊 Processus Node.js actifs:$(NC)"
-	@ps aux | grep -E "(node|npm)" | grep -v grep || echo "$(YELLOW)⚠️  Aucun processus Node.js trouvé$(NC)"
-
-.PHONY: update
-update: ## Met à jour les dépendances NPM
-	@echo "$(CYAN)📦 Mise à jour des dépendances...$(NC)"
-	npm update
-	@echo "$(GREEN)✓ Dépendances mises à jour$(NC)"
-
-.PHONY: audit
-audit: ## Vérifie les vulnérabilités de sécurité
-	@echo "$(CYAN)🔒 Audit de sécurité...$(NC)"
-	npm audit
-
 .PHONY: info
 info: ## Affiche les informations détaillées du projet
 	@echo "$(CYAN)ℹ️  Informations détaillées:$(NC)"
@@ -264,91 +113,18 @@ info: ## Affiche les informations détaillées du projet
 	@echo "   Version: $(shell grep '"version"' package.json | cut -d'"' -f4)"
 	@echo "   Description: $(shell grep '"description"' package.json | cut -d'"' -f4)"
 	@echo ""
+	@echo "$(YELLOW)🔧 Environnement:$(NC)"
+	@echo "   Node.js: $(if $(shell which node),$(GREEN)✓$(NC) $(NODE_VERSION),$(RED)✗ Non installé$(NC))"
+	@echo "   NPM:     $(if $(shell which npm),$(GREEN)✓$(NC) $(NPM_VERSION),$(RED)✗ Non installé$(NC))"
+	@echo ""
+	@echo "$(YELLOW)📁 Fichiers de configuration:$(NC)"
+	@echo "   package.json: $(if $(wildcard package.json),$(GREEN)✓$(NC),$(RED)✗$(NC))"
+	@echo "   $(ENV_FILE):        $(if $(wildcard $(ENV_FILE)),$(GREEN)✓$(NC),$(YELLOW)⚠ Manquant$(NC))"
+	@echo "   node_modules: $(if $(wildcard node_modules/),$(GREEN)✓ Installées$(NC),$(RED)✗ Non installées$(NC))"
+	@echo ""
 	@echo "$(YELLOW)🎯 Objectif:$(NC)"
 	@echo "   Connecter un cluster Proxmox à Home Assistant"
 	@echo "   via MQTT avec auto-discovery"
 	@echo ""
 	@echo "$(YELLOW)🏗️  Architecture:$(NC)"
 	@echo "   Proxmox API ↔ Node.js Bridge ↔ MQTT Broker ↔ Home Assistant"
-
-.PHONY: menu
-menu: help ## Alias pour help
-
-# Cible pour les développeurs
-.PHONY: docker-build
-docker-build: ## Construit l'image Docker (future fonctionnalité)
-	@echo "$(YELLOW)🐳 Construction Docker non implémentée$(NC)"
-	@echo "$(BLUE)   Cette fonctionnalité sera ajoutée prochainement$(NC)"
-
-.PHONY: all
-all: setup check ## Configuration complète + vérifications
-
-# Docker commands
-.PHONY: docker-build
-docker-build: ## Construit l'image Docker
-	@echo "$(CYAN)🐳 Construction de l'image Docker...$(NC)"
-	docker build -t proxmox2mqtt:latest .
-	@echo "$(GREEN)✓ Image Docker construite$(NC)"
-
-.PHONY: docker-build-no-cache
-docker-build-no-cache: ## Construit l'image Docker sans cache
-	@echo "$(CYAN)🐳 Construction de l'image Docker (sans cache)...$(NC)"
-	docker build --no-cache -t proxmox2mqtt:latest .
-	@echo "$(GREEN)✓ Image Docker construite$(NC)"
-
-.PHONY: docker-run
-docker-run: ## Lance le conteneur Docker
-	@echo "$(CYAN)🐳 Démarrage du conteneur Docker...$(NC)"
-	@if [ ! -f .env ]; then \
-		echo "$(RED)❌ Fichier .env manquant !$(NC)"; \
-		echo "$(YELLOW)   Copiez .env.example vers .env et configurez vos paramètres$(NC)"; \
-		exit 1; \
-	fi
-	docker-compose up -d
-	@echo "$(GREEN)✓ Conteneur démarré$(NC)"
-
-.PHONY: docker-stop
-docker-stop: ## Arrête le conteneur Docker
-	@echo "$(CYAN)🐳 Arrêt du conteneur Docker...$(NC)"
-	docker-compose down
-	@echo "$(GREEN)✓ Conteneur arrêté$(NC)"
-
-.PHONY: docker-restart
-docker-restart: ## Redémarre le conteneur Docker
-	@echo "$(CYAN)🐳 Redémarrage du conteneur Docker...$(NC)"
-	docker-compose restart
-	@echo "$(GREEN)✓ Conteneur redémarré$(NC)"
-
-.PHONY: docker-logs
-docker-logs: ## Affiche les logs du conteneur
-	@echo "$(CYAN)📊 Logs du conteneur Docker:$(NC)"
-	docker-compose logs -f
-
-.PHONY: docker-shell
-docker-shell: ## Ouvre un shell dans le conteneur
-	@echo "$(CYAN)🐚 Ouverture d'un shell dans le conteneur...$(NC)"
-	docker-compose exec proxmox2mqtt sh
-
-.PHONY: docker-clean
-docker-clean: ## Nettoie les images et conteneurs Docker
-	@echo "$(CYAN)🧹 Nettoyage Docker...$(NC)"
-	docker-compose down --rmi all --volumes --remove-orphans
-	docker system prune -f
-	@echo "$(GREEN)✓ Nettoyage terminé$(NC)"
-
-.PHONY: docker-rebuild
-docker-rebuild: docker-stop docker-build docker-run ## Reconstruction complète et redémarrage
-
-.PHONY: docker-status
-docker-status: ## Affiche le statut du conteneur
-	@echo "$(CYAN)📊 Statut du conteneur Docker:$(NC)"
-	docker-compose ps
-	@echo ""
-	@echo "$(CYAN)📊 Utilisation des ressources:$(NC)"
-	docker stats --no-stream proxmox2mqtt 2>/dev/null || echo "$(YELLOW)Conteneur non démarré$(NC)"
-
-.PHONY: docker-health
-docker-health: ## Vérifie la santé du conteneur
-	@echo "$(CYAN)🏥 Vérification de la santé du conteneur...$(NC)"
-	@docker inspect --format='{{.State.Health.Status}}' proxmox2mqtt 2>/dev/null | \
-		awk '{if($$1=="healthy") print "$(GREEN)✓ Conteneur en bonne santé$(NC)"; else if($$1=="unhealthy") print "$(RED)❌ Conteneur en mauvaise santé$(NC)"; else print "$(YELLOW)⚠️ État de santé inconnu$(NC)"}'

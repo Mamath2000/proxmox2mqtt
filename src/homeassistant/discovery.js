@@ -40,14 +40,16 @@ class HomeAssistantDiscovery {
                                                     value_template: `{{ value }}`,
                                                 }),
             // Capteur liste des conteneurs LXC
-            [`${nodeName}_lxc_list`]: this.addSensorDiscovery(nodeName, 'lxc_list', {
-                                                    name: `LXC Containers List`,
+            [`${nodeName}_lxc_count`]: this.addSensorDiscovery(nodeName, 'lxc_count', {
+                                                    name: `LXC Containers Count`,
                                                     icon: 'mdi:format-list-bulleted',
                                                     device_class: null,
                                                     unit_of_measurement: null,
-                                                    state_class: null,
+                                                    state_class: 'measurement',
                                                     availability: availability,
-                                                    value_template: `{{ value_json.lxc_list }}`
+                                                    value_template: `{{ value_json.lxc_list | split('|') | length }}`,
+                                                    json_attributes_topic: `${this.baseTopic}/nodes/${nodeName}`,
+                                                    json_attributes_template: `{{ value_json.lxc_list }}`
                                                 }),
             // Capteur CPU
             [`${nodeName}_cpu_usage`] : this.addSensorDiscovery(nodeName, 'cpu_usage', {
