@@ -5,71 +5,90 @@ const logger = require('../utils/logger');
 class MQTTClient extends EventEmitter {
     constructor(config) {
         super();
-        this.config = config;
+        this.config = {
+            broker: config.broker,
+            username: config.username || '',
+            password: config.password || '',
+            clientId: config.clientId || 'proxmox2mqtt',
+            keepalive: parseInt(process.env.MQTT_KEEPALIVE) || 60,
+            connectTimeout: (parseInt(process.env.MQTT_CONNECT_TIMEOUT) || 60) * 1000, // Convertir en ms
+            reconnectPeriod: (parseInt(process.env.MQTT_RECONNECT_PERIOD) || 5) * 1000  // Convertir en ms
+        };
+        
+        // Générer un clientId unique pour éviter les conflits
+        const timestamp = Date.now();
+        const random = Math.random().toString(36).substring(2, 8);
+        this.config.clientId = `${this.config.clientId}_${timestamp}_${random}`;
+        
         this.client = null;
         this.isConnected = false;
         this.baseTopic = 'proxmox2mqtt';
     }
 
     async connect() {
-        return new Promise((resolve, reject) => {
-            try {
-                // Génération d'un client ID unique
-                const randomSuffix = Math.random().toString(36).substring(7);
-                const timestamp = Date.now();
-                const clientId = `${this.config.clientId}_${timestamp}_${randomSuffix}`;
-
-                const options = {
-                    clientId: clientId,
-                    clean: true,
-                    connectTimeout: 4000,
-                    reconnectPeriod: 1000
-                };
-
-                if (this.config.username && this.config.password) {
-                    options.username = this.config.username;
-                    options.password = this.config.password;
+        try {
+            logger.info(`Connexion au broker MQTT: ${this.config.broker}`);
+            
+            const options = {
+                clientId: this.config.clientId,
+                clean: true,
+                keepalive: this.config.keepalive,
+                connectTimeout: this.config.connectTimeout,
+                reconnectPeriod: this.config.reconnectPeriod,
+                will: {
+                    topic: 'proxmox2mqtt/status',
+                    payload: 'offline',
+                    qos: 1,
+                    retain: true
                 }
-
-                this.client = mqtt.connect(this.config.broker, options);
-
+            };
+            
+            // Ajouter l'authentification si fournie
+            if (this.config.username) {
+                options.username = this.config.username;
+                options.password = this.config.password;
+            }
+            
+            this.client = mqtt.connect(this.config.broker, options);
+            
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error(`Timeout de connexion MQTT après ${this.config.connectTimeout}ms`));
+                }, this.config.connectTimeout);
+                
                 this.client.on('connect', () => {
+                    clearTimeout(timeout);
                     this.isConnected = true;
-                    logger.info('Connexion MQTT établie');
+                    logger.info(`Connecté au broker MQTT avec l'ID: ${this.config.clientId}`);
+                    
+                    // Publier le statut en ligne
+                    this.client.publish('proxmox2mqtt/status', 'online', { qos: 1, retain: true });
                     
                     // S'abonner aux topics de commande
                     this.subscribeToCommands();
+                    
                     resolve();
                 });
-
+                
                 this.client.on('error', (error) => {
-                    logger.error('Erreur MQTT:', error.message);
+                    clearTimeout(timeout);
+                    logger.error('Erreur MQTT:', error);
                     reject(error);
                 });
-
-                this.client.on('close', () => {
+                
+                this.client.on('disconnect', () => {
                     this.isConnected = false;
-                    logger.warn('Connexion MQTT fermée');
-                })
-                ;
-
-                this.client.on('offline', () => {
-                    this.isConnected = false;
-                    logger.warn('Connexion MQTT perdue');
+                    logger.warn('Déconnecté du broker MQTT');
                 });
-
+                
                 this.client.on('reconnect', () => {
-                    logger.info('Reconnexion MQTT en cours...');
+                    logger.info('Reconnexion au broker MQTT...');
                 });
-
-                this.client.on('message', (topic, message) => {
-                    this.handleMessage(topic, message);
-                });
-
-            } catch (error) {
-                reject(error);
-            }
-        });
+            });
+        } catch (error) {
+            logger.error('Erreur lors de la connexion MQTT:', error);
+            throw error;
+        }
     }
 
     async disconnect() {
@@ -154,7 +173,8 @@ class MQTTClient extends EventEmitter {
                 ceph_used: data.ceph?.used || 0,
                 ceph_total: data.ceph?.total || 0,
                 uptime: data.uptime,
-                lxc_list: data.lxcList,
+                lxc_count: data.lxcList.length,
+                lxc_list: { containers: data.lxcList },
                 last_update: data.lastUpdate
             }), { retain: true });
 
@@ -166,8 +186,7 @@ class MQTTClient extends EventEmitter {
 
     async publishContainerData(containerName, data) {
         try {
-            const containerKey = `${data.vmid}_${data.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`;
-            const baseTopic = `${this.baseTopic}/lxc/${containerKey}`;
+            const baseTopic = `${this.baseTopic}/lxc/${data.key}`;
 
             // Publication des données complètes en JSON
             await this.publish(baseTopic, JSON.stringify({

@@ -22,10 +22,12 @@ class Proxmox2MQTT {
         });
 
         this.discovery = new HomeAssistantDiscovery(this.mqtt);
-        this.updateInterval = parseInt(process.env.UPDATE_INTERVAL) || 30000;
+        this.updateInterval = (parseInt(process.env.UPDATE_INTERVAL) || 30) * 1000;
         this.nodes = new Map();
         this.containers = new Map(); // Pour stocker les conteneurs découverts
         this.updateTimer = null;
+        this.refreshTimer = null; // Timer pour le rafraîchissement de la liste des conteneurs
+        this.refreshInterval = (parseInt(process.env.REFRESH_INTERVAL) || 300) * 1000; // 5 minutes par défaut
     }
 
     async start() {
@@ -51,6 +53,9 @@ class Proxmox2MQTT {
             // Démarrage de la mise à jour périodique
             this.startPeriodicUpdate();
 
+            // Démarrage du rafraîchissement périodique de la liste des conteneurs
+            this.startPeriodicRefresh();
+
             logger.info('Proxmox2MQTT démarré avec succès');
         } catch (error) {
             logger.error('Erreur lors du démarrage:', error);
@@ -67,6 +72,13 @@ class Proxmox2MQTT {
                 clearInterval(this.updateTimer);
                 this.updateTimer = null;
                 logger.debug('Timer de mise à jour arrêté');
+            }
+
+            // Arrêter le rafraîchissement périodique
+            if (this.refreshTimer) {
+                clearInterval(this.refreshTimer);
+                this.refreshTimer = null;
+                logger.debug('Timer de rafraîchissement arrêté');
             }
 
             // Marquer tous les nœuds comme hors ligne
@@ -148,7 +160,7 @@ class Proxmox2MQTT {
                             logger.info(`Conteneur ${containerDetails.key} ignoré par Home Assistant`);
                         } else {
                             if (!this.containers.has(containerDetails.key)) {
-                                logger.info(`Nouveau conteneur découvert: ${containerDetails.name} (${container.vmid}) sur ${nodeName}`);
+                                logger.info(`Nouveau conteneur découvert: ${containerDetails.key} sur ${nodeName}`);
                             }
 
                             this.containers.set(containerDetails.key, {
@@ -235,21 +247,60 @@ class Proxmox2MQTT {
                 return;
             }
 
-            const containerData = await this.proxmox.getContainerStatus(containerInfo.node, containerInfo.vmid);
-            if (containerData && !containerInfo.isIgnore) {
-                await this.mqtt.publishContainerData(containerKey, containerData);
+            try {
+                const containerData = await this.proxmox.getContainerStatus(containerInfo.node, containerInfo.vmid);
+                if (containerData && !containerInfo.isIgnore) {
+                    await this.mqtt.publishContainerData(containerKey, containerData);
 
-                // Publier la disponibilité
-                const availability = containerData.error ? 'offline' : 'online';
-                await this.discovery.publishContainerAvailability(containerKey, availability);
+                    // Publier la disponibilité
+                    const availability = containerData.error ? 'offline' : 'online';
+                    await this.discovery.publishContainerAvailability(containerKey, availability);
 
-                logger.debug(`Données mises à jour pour le conteneur ${containerData.name} (${availability})`);
-            } else {
-                logger.warn(`Conteneur ${containerKey} ignoré ou non trouvé`);
-                await this.discovery.publishContainerAvailability(containerKey, 'offline');
+                    logger.debug(`Données mises à jour pour le conteneur ${containerData.name} (${availability})`);
+                } else {
+                    logger.warn(`Conteneur ${containerKey} ignoré ou non trouvé`);
+                    await this.discovery.publishContainerAvailability(containerKey, 'offline');
+                }
+            } catch (error) {
+                // Vérifier si c'est une erreur de migration
+                if (error.message === 'CONTAINER_NOT_FOUND') {
+                    logger.warn(`Conteneur ${containerKey} non trouvé sur ${containerInfo.node} - recherche sur les autres nœuds...`);
+                    
+                    const foundContainer = await this.proxmox.findContainer(containerInfo.vmid);
+                    if (foundContainer) {
+                        const oldNode = containerInfo.node;
+                        logger.info(`🔄 Migration détectée: conteneur ${containerInfo.vmid} déplacé de ${oldNode} vers ${foundContainer.node}`);
+                        
+                        // Mettre à jour l'association nœud-conteneur
+                        const updatedContainerInfo = {
+                            ...containerInfo,
+                            node: foundContainer.node
+                        };
+                        this.containers.set(containerKey, updatedContainerInfo);
+                        
+                        // Récupérer les nouvelles données du conteneur
+                        const containerData = await this.proxmox.getContainerStatus(foundContainer.node, containerInfo.vmid);
+                        if (containerData && !containerInfo.isIgnore) {
+                            // Mettre à jour la configuration HA avec le nouveau nœud
+                            await this.discovery.updateContainerDiscoveryAfterMigration(containerData, oldNode);
+                            
+                            // Publier les nouvelles données
+                            await this.mqtt.publishContainerData(containerKey, containerData);
+                            await this.discovery.publishContainerAvailability(containerKey, 'online');
+                            
+                            logger.info(`✅ Conteneur ${containerKey} mis à jour après migration vers ${foundContainer.node}`);
+                        }
+                    } else {
+                        logger.error(`❌ Conteneur ${containerInfo.vmid} non trouvé sur aucun nœud du cluster`);
+                        await this.discovery.publishContainerAvailability(containerKey, 'offline');
+                    }
+                } else {
+                    throw error; // Relancer si ce n'est pas une erreur de migration
+                }
             }
         } catch (error) {
-            logger.error('Erreur générale lors de la mise à jour des conteneurs:', error);
+            logger.error(`Erreur lors de la mise à jour du conteneur ${containerKey}:`, error.message);
+            await this.discovery.publishContainerAvailability(containerKey, 'offline');
         }
     }
 
@@ -320,7 +371,90 @@ class Proxmox2MQTT {
             await this.updateNodeData();
         }, this.updateInterval);
 
-        logger.info(`Mise à jour périodique configurée (${this.updateInterval}ms)`);
+        logger.info(`Mise à jour périodique configurée (${this.updateInterval / 1000}s)`);
+    }
+
+    startPeriodicRefresh() {
+        this.refreshTimer = setInterval(async () => {
+            await this.refreshAllContainers();
+        }, this.refreshInterval);
+
+        logger.info(`Rafraîchissement périodique des conteneurs configuré (${this.refreshInterval / 1000}s)`);
+    }
+
+    /**
+     * Rafraîchit la liste complète des conteneurs sur tous les nœuds
+     * Utile pour détecter les migrations et les nouveaux/supprimés conteneurs
+     */
+    async refreshAllContainers() {
+        logger.info('🔄 Rafraîchissement complet de la liste des conteneurs...');
+        
+        try {
+            const allNodes = await this.proxmox.getNodes();
+            const newContainerMap = new Map();
+            let totalContainers = 0;
+
+            // Parcourir tous les nœuds pour récupérer leurs conteneurs
+            for (const node of allNodes) {
+                try {
+                    const containers = await this.proxmox.getContainers(node.node);
+
+                    for (const container of containers) {
+                        const containerWithNode = {
+                            ...container,
+                            node: node.node
+                        };
+                        
+                        newContainerMap.set(container.key, containerWithNode);
+                        totalContainers++;
+                        
+                        // Vérifier si c'est un nouveau conteneur ou une migration
+                        const existingContainer = this.containers.get(container.key);
+                        if (!existingContainer) {
+                            logger.info(`➕ Nouveau conteneur détecté: ${container.name} (${container.vmid}) sur ${node.node}`);
+                            // Publier la découverte pour le nouveau conteneur
+                            await this.discovery.publishContainerDiscovery(containerWithNode);
+                            await this.discovery.publishContainerAvailability(container.key, 'online');
+                        } else if (existingContainer.node !== node.node) {
+                            logger.info(`🔄 Migration détectée: ${container.name} (${container.vmid}) déplacé de ${existingContainer.node} vers ${node.node}`);
+                            // Mettre à jour la découverte après migration
+                            await this.discovery.updateContainerDiscoveryAfterMigration(containerWithNode, existingContainer.node);
+                        } else {
+                            // Conteneur existant sans changement de nœud - republier la découverte pour s'assurer de la cohérence
+                            await this.discovery.publishContainerDiscovery(containerWithNode);
+                        }
+                    }
+                } catch (error) {
+                    logger.error(`Erreur lors de la récupération des conteneurs du nœud ${node.node}:`, error.message);
+                }
+            }
+
+            // Détecter les conteneurs supprimés
+            for (const [containerKey, container] of this.containers) {
+                if (!newContainerMap.has(containerKey)) {
+                    logger.info(`➖ Conteneur supprimé: ${container.name}`);
+                    await this.discovery.removeContainerDiscovery(containerKey);
+                }
+            }
+
+            // Mettre à jour la map des conteneurs
+            this.containers = newContainerMap;
+            
+            logger.info(`✅ Rafraîchissement terminé: ${totalContainers} conteneurs trouvés sur ${allNodes.length} nœuds`);
+            
+            // Republier également la découverte des nœuds pour maintenir la cohérence
+            for (const node of allNodes) {
+                try {
+                    await this.discovery.publishNodeDiscovery(node);
+                    await this.discovery.publishAvailability(node.node, 'online');
+                } catch (error) {
+                    logger.error(`Erreur lors de la republication de la découverte du nœud ${node.node}:`, error.message);
+                }
+            }
+            
+        } catch (error) {
+            logger.error('Erreur lors du rafraîchissement des conteneurs:', error);
+        }
     }
 }
 

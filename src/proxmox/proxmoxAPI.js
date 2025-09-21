@@ -58,9 +58,9 @@ class ProxmoxAPI {
             logger.debug(`Récupération du statut pour le nœud: ${nodeName}`);
             
             // Vérifier d'abord si le nœud existe
-            const nodesResponse = await this.client.get('/nodes');
-            const availableNodes = nodesResponse.data.data.map(node => node.node);
-            
+            const nodesResponse = await this.getNodes();
+            const availableNodes = nodesResponse.map(node => node.node);
+
             if (!availableNodes.includes(nodeName)) {
                 logger.warn(`Le nœud ${nodeName} n'existe pas. Nœuds disponibles: ${availableNodes.join(', ')}`);
                 return null;
@@ -240,15 +240,24 @@ class ProxmoxAPI {
     async getContainers(nodeName) {
         try {
             const response = await this.client.get(`/nodes/${nodeName}/lxc`);
-            // add container Key on each container
-            response.data.data.forEach(container => {
-                container.containerKey = `${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`;
+            // filter ignored containers and add container Key on each container
+            const filteredList = response.data.data.filter(container => {
+                const tagsArray = container.tags ? container.tags.split(';') : [];
+                return !tagsArray.find(tag => tag.trim() === 'ha-ignore');
             });
-            return response.data.data;
+            filteredList.forEach(container => {
+                    container.key = this.createContainerKey(container);
+            });
+            return filteredList;
         } catch (error) {
             logger.error(`Erreur lors de la récupération des conteneurs du nœud ${nodeName}:`, error.message);
             throw error;
         }
+    }
+
+    createContainerKey(containerData) {
+        const { vmid, name } = containerData;
+        return `${vmid}_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`;
     }
 
     async getContainersList(nodeName) {
@@ -261,11 +270,11 @@ class ProxmoxAPI {
                 // recherche le tag "ha-ignore"
                 const tagsArray = container.tags ? container.tags.split(';') : [];
                 if (!tagsArray.find(tag => tag.trim() === 'ha-ignore')) {
-                    lxcList.push(`${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`);
+                    lxcList.push(this.createContainerKey(container));
                 }
             });
 
-            return lxcList.join('|');
+            return lxcList;
         } catch (error) {
             logger.error(`Erreur lors de la récupération de la liste des conteneurs du nœud ${nodeName}:`, error.message);
             throw error;
@@ -297,7 +306,7 @@ class ProxmoxAPI {
             }
 
             return {
-                key: `${containerId}_${statusData.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`,
+                key: this.createContainerKey(statusData),
                 node: nodeName,
                 vmid: containerId,
                 name: statusData.name,
@@ -331,6 +340,12 @@ class ProxmoxAPI {
                 lastUpdate: new Date().toISOString()
             };
         } catch (error) {
+            // Si erreur 500/404, le conteneur n'est probablement plus sur ce nœud
+            if (error.response?.status === 500 || error.response?.status === 404) {
+                logger.warn(`Conteneur ${containerId} non trouvé sur ${nodeName} - possible migration détectée`);
+                throw new Error('CONTAINER_NOT_FOUND');
+            }
+            
             logger.error(`Erreur lors de la récupération du statut du conteneur ${containerId} sur ${nodeName}:`, {
                 message: error.message,
                 status: error.response?.status,
@@ -383,6 +398,81 @@ class ProxmoxAPI {
             return response.data;
         } catch (error) {
             logger.error(`Erreur lors du redémarrage du conteneur ${containerId} sur ${nodeName}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Recherche un conteneur sur tous les nœuds du cluster
+     * Utile pour détecter les migrations de conteneurs
+     */
+    async findContainer(containerId) {
+        try {
+            logger.debug(`Recherche du conteneur ${containerId} sur tous les nœuds...`);
+            
+            // Récupérer la liste de tous les nœuds
+            const nodes = await this.getNodes();
+            
+            for (const node of nodes) {
+                try {
+                    // Vérifier si le conteneur existe sur ce nœud
+                    const containers = await this.getContainers(node.node);
+                    const container = containers.find(c => c.vmid == containerId);
+                    
+                    if (container) {
+                        logger.info(`Conteneur ${containerId} trouvé sur le nœud ${node.node}`);
+                        return {
+                            node: node.node,
+                            container: container
+                        };
+                    }
+                } catch (nodeError) {
+                    logger.debug(`Erreur lors de la recherche sur ${node.node}:`, nodeError.message);
+                    continue;
+                }
+            }
+            
+            logger.warn(`Conteneur ${containerId} non trouvé sur aucun nœud`);
+            return null;
+            
+        } catch (error) {
+            logger.error(`Erreur lors de la recherche du conteneur ${containerId}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Récupère la liste complète de tous les conteneurs du cluster
+     * avec leur nœud associé
+     */
+    async getAllContainers() {
+        try {
+            logger.debug('Récupération de tous les conteneurs du cluster...');
+            
+            const nodes = await this.getNodes();
+            const allContainers = [];
+            
+            for (const node of nodes) {
+                try {
+                    const containers = await this.getContainers(node.node);
+                    containers.forEach(container => {
+                        allContainers.push({
+                            ...container,
+                            node: node.node,
+                            key: `${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`
+                        });
+                    });
+                } catch (nodeError) {
+                    logger.warn(`Erreur lors de la récupération des conteneurs sur ${node.node}:`, nodeError.message);
+                    continue;
+                }
+            }
+            
+            logger.debug(`${allContainers.length} conteneurs trouvés dans le cluster`);
+            return allContainers;
+            
+        } catch (error) {
+            logger.error('Erreur lors de la récupération de tous les conteneurs:', error.message);
             throw error;
         }
     }

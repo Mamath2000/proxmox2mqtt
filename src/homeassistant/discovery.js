@@ -41,15 +41,15 @@ class HomeAssistantDiscovery {
                                                 }),
             // Capteur liste des conteneurs LXC
             [`${nodeName}_lxc_count`]: this.addSensorDiscovery(nodeName, 'lxc_count', {
-                                                    name: `LXC Containers Count`,
+                                                    name: `LXC Count`,
                                                     icon: 'mdi:format-list-bulleted',
                                                     device_class: null,
                                                     unit_of_measurement: null,
                                                     state_class: 'measurement',
                                                     availability: availability,
-                                                    value_template: `{{ value_json.lxc_list | split('|') | length }}`,
+                                                    // value_template: `{{ value_json.lxc_list.split('|') | length if value_json.lxc_list else 0 }}`,
                                                     json_attributes_topic: `${this.baseTopic}/nodes/${nodeName}`,
-                                                    json_attributes_template: `{{ value_json.lxc_list }}`
+                                                    json_attributes_template: `{{ value_json.lxc_list | tojson }}`
                                                 }),
             // Capteur CPU
             [`${nodeName}_cpu_usage`] : this.addSensorDiscovery(nodeName, 'cpu_usage', {
@@ -468,21 +468,67 @@ class HomeAssistantDiscovery {
 
     getContainerDeviceInfo(container) {
         return {
-            identifiers: [`proxmox_${container.key}`],
+            identifiers: [`proxmox_${container.key}`], // Identifiant basé sur la clé du conteneur
             name: `${container.name} (${container.vmid})`,
             model: 'Proxmox LXC Container',
             manufacturer: 'Proxmox',
             sw_version: '1.0.0',
-            via_device: `proxmox_${container.node}`
+            via_device: `proxmox_${container.node}`, // Sera mis à jour lors des migrations
+            configuration_url: `https://${process.env.PROXMOX_HOST}:${process.env.PROXMOX_PORT || 8006}/#v1:0:=lxc%2F${container.vmid}:4:5:=content`
         };
     }
 
+    /**
+     * Met à jour la configuration de découverte d'un conteneur après migration
+     * @param {Object} container - Données du conteneur avec le nouveau nœud
+     * @param {string} oldNode - Ancien nœud (optionnel)
+     */
+    async updateContainerDiscoveryAfterMigration(container, oldNode = null) {
+        try {
+            logger.info(`🔄 Mise à jour de la découverte HA pour ${container.name} (migration vers ${container.node})`);
+            
+            // Republier la configuration de découverte avec le nouveau nœud
+            await this.publishContainerDiscovery(container);
+            
+            // Optionnel: nettoyer l'ancien availability topic si on connaît l'ancien nœud
+            if (oldNode && oldNode !== container.node) {
+                logger.debug(`Nettoyage des anciens topics pour migration de ${oldNode} vers ${container.node}`);
+                // Les topics d'availability sont basés sur la clé du conteneur, pas le nœud,
+                // donc ils restent cohérents après migration
+            }
+            
+            logger.info(`✅ Configuration HA mise à jour pour ${container.name} sur ${container.node}`);
+            
+        } catch (error) {
+            logger.error(`Erreur lors de la mise à jour de la découverte après migration:`, error);
+        }
+    }
+
     async publishContainerAvailability(containerKey, status = 'online') {
-    const availabilityTopic = `${this.baseTopic}/lxc/${containerKey}/availability`;
+        const availabilityTopic = `${this.baseTopic}/lxc/${containerKey}/availability`;
         try {
             await this.mqtt.publish(availabilityTopic, status, { retain: true });
         } catch (error) {
             logger.error(`Erreur lors de la publication de la disponibilité pour le conteneur ${containerKey}:`, error);
+        }
+    }
+
+    /**
+     * Supprime la configuration de découverte d'un conteneur
+     * @param {string} containerKey - Clé du conteneur
+     */
+    async removeContainerDiscovery(containerKey) {
+        try {
+            // Publier un message vide pour supprimer la configuration de découverte
+            const discoveryTopic = `homeassistant/device/lxc/${containerKey}/config`;
+            await this.mqtt.publish(discoveryTopic, '', { retain: true });
+
+            // Marquer comme hors ligne
+            await this.publishContainerAvailability(containerKey, 'offline');
+
+            logger.info(`Configuration de découverte supprimée pour le conteneur ${containerKey}`);
+        } catch (error) {
+            logger.error(`Erreur lors de la suppression de la découverte pour ${containerKey}:`, error);
         }
     }
 }
