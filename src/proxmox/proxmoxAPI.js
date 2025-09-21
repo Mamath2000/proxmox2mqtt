@@ -4,43 +4,156 @@ const logger = require('../utils/logger');
 
 class ProxmoxAPI {
     constructor(config) {
-        this.host = config.host;
-        this.user = config.user;
-        this.password = config.password;
-        this.realm = config.realm;
-        this.port = config.port;
+        this.config = config;
+        this.client = null;
         this.ticket = null;
-        this.csrfToken = null;
-        
-        // Configuration d'axios pour Proxmox
-        this.client = axios.create({
-            baseURL: `https://${this.host}:${this.port}/api2/json`,
-            httpsAgent: new https.Agent({
-                rejectUnauthorized: false // Pour les certificats auto-signés
-            }),
-            timeout: 10000
-        });
+        this.isConnected = false;
+        this.reconnectAttempts = 0;
+        this.baseReconnectInterval = parseInt(process.env.PROXMOX_RECONNECT_INTERVAL) || 30; // secondes
+        this.maxReconnectInterval = parseInt(process.env.PROXMOX_MAX_RECONNECT_INTERVAL) || 300; // 5 minutes max
+        this.reconnectTimer = null;
     }
 
     async connect() {
         try {
-            const response = await this.client.post('/access/ticket', {
-                username: `${this.user}@${this.realm}`,
-                password: this.password
+            logger.info(`Connexion à Proxmox: ${this.config.host}:${this.config.port} (tentative #${this.reconnectAttempts + 1})`);
+            
+            this.client = axios.create({
+                baseURL: `https://${this.config.host}:${this.config.port}/api2/json`,
+                httpsAgent: new https.Agent({
+                    rejectUnauthorized: false
+                }),
+                timeout: 30000,
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
             });
 
-            this.ticket = response.data.data.ticket;
-            this.csrfToken = response.data.data.CSRFPreventionToken;
-
-            // Configuration des headers pour les futures requêtes
-            this.client.defaults.headers.common['Cookie'] = `PVEAuthCookie=${this.ticket}`;
-            this.client.defaults.headers.common['CSRFPreventionToken'] = this.csrfToken;
-
-            logger.info('Authentification Proxmox réussie');
+            await this.authenticate();
+            this.isConnected = true;
+            this.reconnectAttempts = 0; // Reset du compteur après succès
+            
+            // Arrêter le timer de reconnexion s'il est actif
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+            
+            logger.info('✅ Connexion à Proxmox rétablie avec succès');
+            return true;
+            
         } catch (error) {
-            logger.error('Erreur d\'authentification Proxmox:', error.message);
+            this.isConnected = false;
+            logger.error('❌ Erreur de connexion Proxmox:', error.message);
+            
+            // Déclencher la reconnexion automatique (sans limite)
+            this.scheduleReconnect();
             throw error;
         }
+    }
+
+    async authenticate() {
+        try {
+            const authData = new URLSearchParams({
+                username: `${this.config.user}@${this.config.realm}`,
+                password: this.config.password
+            });
+
+            const response = await this.client.post('/access/ticket', authData);
+            
+            if (response.data && response.data.data) {
+                this.ticket = response.data.data.ticket;
+                this.client.defaults.headers.Cookie = `PVEAuthCookie=${this.ticket}`;
+                logger.info('🔑 Authentification Proxmox réussie');
+            } else {
+                throw new Error('Format de réponse d\'authentification invalide');
+            }
+        } catch (error) {
+            logger.error('❌ Erreur d\'authentification Proxmox:', error.message);
+            throw error;
+        }
+    }
+
+    scheduleReconnect() {
+        if (this.reconnectTimer) {
+            return; // Un timer de reconnexion est déjà actif
+        }
+
+        this.reconnectAttempts++;
+        
+        // Backoff exponentiel avec maximum
+        const delay = Math.min(
+            this.baseReconnectInterval * Math.pow(2, Math.min(this.reconnectAttempts - 1, 5)),
+            this.maxReconnectInterval
+        );
+        
+        logger.warn(`🔄 Tentative de reconnexion Proxmox #${this.reconnectAttempts} dans ${delay}s...`);
+        
+        this.reconnectTimer = setTimeout(async () => {
+            this.reconnectTimer = null;
+            try {
+                await this.connect();
+            } catch (error) {
+                logger.error('❌ Échec de la reconnexion Proxmox:', error.message);
+                // Programmer automatiquement la prochaine tentative
+                this.scheduleReconnect();
+            }
+        }, delay * 1000);
+    }
+
+    async makeRequest(endpoint, method = 'GET', data = null) {
+        // Vérifier la connexion avant chaque requête
+        if (!this.isConnected) {
+            logger.warn('⚠️  Proxmox non connecté, tentative de reconnexion...');
+            await this.connect();
+        }
+
+        try {
+            const config = { method, url: endpoint };
+            
+            if (data && method !== 'GET') {
+                config.data = new URLSearchParams(data);
+            }
+
+            const response = await this.client.request(config);
+            return response.data;
+            
+        } catch (error) {
+            this.isConnected = false;
+            
+            if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.response?.status === 401) {
+                logger.warn(`⚠️  Connexion Proxmox perdue (${error.message}), reconnexion automatique...`);
+                this.scheduleReconnect();
+            } else {
+                logger.error(`❌ Erreur API Proxmox sur ${endpoint}:`, error.message);
+            }
+            
+            throw error;
+        }
+    }
+
+    async disconnect() {
+        this.isConnected = false;
+        
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        
+        logger.info('🔌 Déconnexion de Proxmox');
+    }
+
+    // Méthode pour forcer une reconnexion immédiate
+    async forceReconnect() {
+        logger.info('🔄 Reconnexion forcée à Proxmox...');
+        
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        
+        this.reconnectAttempts = 0;
+        await this.connect();
     }
 
     async getNodes() {
