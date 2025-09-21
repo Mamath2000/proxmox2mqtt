@@ -120,6 +120,7 @@ class ProxmoxAPI {
                     usage: storageData.ceph.usage,
                     status: storageData.ceph.status
                 },
+                lxcList: await this.getContainersList(nodeName),
                 lastUpdate: new Date().toISOString()
             };
         } catch (error) {
@@ -243,10 +244,30 @@ class ProxmoxAPI {
             response.data.data.forEach(container => {
                 container.containerKey = `${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`;
             });
-
             return response.data.data;
         } catch (error) {
             logger.error(`Erreur lors de la récupération des conteneurs du nœud ${nodeName}:`, error.message);
+            throw error;
+        }
+    }
+
+    async getContainersList(nodeName) {
+        try {
+            const response = await this.client.get(`/nodes/${nodeName}/lxc`);
+            let lxcList = [];
+            // add container Key on each container
+            response.data.data.forEach(container => {
+
+                // recherche le tag "ha-ignore"
+                const tagsArray = container.tags ? container.tags.split(';') : [];
+                if (!tagsArray.find(tag => tag.trim() === 'ha-ignore')) {
+                    lxcList.push(`${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`);
+                }
+            });
+
+            return lxcList.join('|');
+        } catch (error) {
+            logger.error(`Erreur lors de la récupération de la liste des conteneurs du nœud ${nodeName}:`, error.message);
             throw error;
         }
     }

@@ -1,0 +1,63 @@
+services:
+  proxmox2mqtt:
+    build: .
+    container_name: proxmox2mqtt
+    restart: unless-stopped
+    
+    environment:
+      # Configuration Proxmox (obligatoire)
+      - PROXMOX_HOST=${PROXMOX_HOST}
+      - PROXMOX_USER=${PROXMOX_USER}
+      - PROXMOX_PASSWORD=${PROXMOX_PASSWORD}
+      - PROXMOX_REALM=${PROXMOX_REALM:-pam}
+      - PROXMOX_PORT=${PROXMOX_PORT:-8006}
+      
+      # Configuration MQTT (obligatoire)
+      - MQTT_BROKER=${MQTT_BROKER}
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
+      - MQTT_CLIENT_ID=${MQTT_CLIENT_ID:-proxmox2mqtt}
+      
+      # Configuration optionnelle
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - UPDATE_INTERVAL=${UPDATE_INTERVAL:-30000}
+      - NODE_ENV=production
+      
+    volumes:
+      # Persistance des logs
+      - ./logs:/app/logs
+      
+      # Configuration optionnelle (si vous voulez modifier le .env)
+      # - ./.env:/app/.env:ro
+    
+    networks:
+      - proxmox2mqtt_network
+    
+    # Labels pour la documentation
+    labels:
+      - "com.docker.compose.service=proxmox2mqtt"
+      - "description=Bridge Proxmox vers Home Assistant via MQTT"
+      - "version=1.0.0"
+    
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('Health check OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Limite de ressources (optionnel)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+networks:
+  proxmox2mqtt_network:
+    driver: bridge
+    name: proxmox2mqtt_net

@@ -56,6 +56,24 @@ status: ## Affiche le statut du projet
 	@echo "$(YELLOW)📦 Dépendances:$(NC)"
 	@echo "   node_modules: $(if $(wildcard node_modules/),$(GREEN)✓ Installées$(NC),$(RED)✗ Non installées$(NC))"
 
+.PHONY: build
+build: ## Build et publie l'image Docker (avec gestion de version)
+	@echo "$(CYAN)🔨 Lancement du build Docker...$(NC)"
+	@./scripts/build.sh
+	@echo "$(GREEN)✅ Build terminé !$(NC)"
+
+.PHONY: build-push
+build-push: ## Build et pousse l'image vers Docker Hub
+	@echo "$(CYAN)🔨 Build et push vers Docker Hub...$(NC)"
+	@./scripts/build.sh --push
+	@echo "$(GREEN)✅ Build et push terminés !$(NC)"
+
+.PHONY: build-local
+build-local: ## Build local sans incrément de version
+	@echo "$(CYAN)🔨 Build local...$(NC)"
+	@./scripts/build.sh --no-increment
+	@echo "$(GREEN)✅ Build local terminé !$(NC)"
+
 .PHONY: install
 install: ## Installe les dépendances NPM
 	@echo "$(CYAN)📦 Installation des dépendances...$(NC)"
@@ -264,3 +282,73 @@ docker-build: ## Construit l'image Docker (future fonctionnalité)
 
 .PHONY: all
 all: setup check ## Configuration complète + vérifications
+
+# Docker commands
+.PHONY: docker-build
+docker-build: ## Construit l'image Docker
+	@echo "$(CYAN)🐳 Construction de l'image Docker...$(NC)"
+	docker build -t proxmox2mqtt:latest .
+	@echo "$(GREEN)✓ Image Docker construite$(NC)"
+
+.PHONY: docker-build-no-cache
+docker-build-no-cache: ## Construit l'image Docker sans cache
+	@echo "$(CYAN)🐳 Construction de l'image Docker (sans cache)...$(NC)"
+	docker build --no-cache -t proxmox2mqtt:latest .
+	@echo "$(GREEN)✓ Image Docker construite$(NC)"
+
+.PHONY: docker-run
+docker-run: ## Lance le conteneur Docker
+	@echo "$(CYAN)🐳 Démarrage du conteneur Docker...$(NC)"
+	@if [ ! -f .env ]; then \
+		echo "$(RED)❌ Fichier .env manquant !$(NC)"; \
+		echo "$(YELLOW)   Copiez .env.example vers .env et configurez vos paramètres$(NC)"; \
+		exit 1; \
+	fi
+	docker-compose up -d
+	@echo "$(GREEN)✓ Conteneur démarré$(NC)"
+
+.PHONY: docker-stop
+docker-stop: ## Arrête le conteneur Docker
+	@echo "$(CYAN)🐳 Arrêt du conteneur Docker...$(NC)"
+	docker-compose down
+	@echo "$(GREEN)✓ Conteneur arrêté$(NC)"
+
+.PHONY: docker-restart
+docker-restart: ## Redémarre le conteneur Docker
+	@echo "$(CYAN)🐳 Redémarrage du conteneur Docker...$(NC)"
+	docker-compose restart
+	@echo "$(GREEN)✓ Conteneur redémarré$(NC)"
+
+.PHONY: docker-logs
+docker-logs: ## Affiche les logs du conteneur
+	@echo "$(CYAN)📊 Logs du conteneur Docker:$(NC)"
+	docker-compose logs -f
+
+.PHONY: docker-shell
+docker-shell: ## Ouvre un shell dans le conteneur
+	@echo "$(CYAN)🐚 Ouverture d'un shell dans le conteneur...$(NC)"
+	docker-compose exec proxmox2mqtt sh
+
+.PHONY: docker-clean
+docker-clean: ## Nettoie les images et conteneurs Docker
+	@echo "$(CYAN)🧹 Nettoyage Docker...$(NC)"
+	docker-compose down --rmi all --volumes --remove-orphans
+	docker system prune -f
+	@echo "$(GREEN)✓ Nettoyage terminé$(NC)"
+
+.PHONY: docker-rebuild
+docker-rebuild: docker-stop docker-build docker-run ## Reconstruction complète et redémarrage
+
+.PHONY: docker-status
+docker-status: ## Affiche le statut du conteneur
+	@echo "$(CYAN)📊 Statut du conteneur Docker:$(NC)"
+	docker-compose ps
+	@echo ""
+	@echo "$(CYAN)📊 Utilisation des ressources:$(NC)"
+	docker stats --no-stream proxmox2mqtt 2>/dev/null || echo "$(YELLOW)Conteneur non démarré$(NC)"
+
+.PHONY: docker-health
+docker-health: ## Vérifie la santé du conteneur
+	@echo "$(CYAN)🏥 Vérification de la santé du conteneur...$(NC)"
+	@docker inspect --format='{{.State.Health.Status}}' proxmox2mqtt 2>/dev/null | \
+		awk '{if($$1=="healthy") print "$(GREEN)✓ Conteneur en bonne santé$(NC)"; else if($$1=="unhealthy") print "$(RED)❌ Conteneur en mauvaise santé$(NC)"; else print "$(YELLOW)⚠️ État de santé inconnu$(NC)"}'
