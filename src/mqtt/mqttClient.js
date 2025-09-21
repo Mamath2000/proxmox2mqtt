@@ -154,6 +154,7 @@ class MQTTClient extends EventEmitter {
                 ceph_used: data.ceph?.used || 0,
                 ceph_total: data.ceph?.total || 0,
                 uptime: data.uptime,
+                lxc_list: data.lxcList,
                 last_update: data.lastUpdate
             }), { retain: true });
 

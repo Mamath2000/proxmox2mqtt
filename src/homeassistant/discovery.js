@@ -6,6 +6,10 @@ class HomeAssistantDiscovery {
         this.baseTopic = 'proxmox2mqtt';
     }
 
+    /**
+     * Publie la découverte Home Assistant pour un nœud Proxmox
+     * @param {Object} node - Objet nœud Proxmox
+     */
     async publishNodeDiscovery(node) {
         const nodeName = node.node;
         const deviceInfo = this.getDeviceInfo(nodeName);
@@ -23,7 +27,7 @@ class HomeAssistantDiscovery {
             payload_available: 'online',
             payload_not_available: 'offline'
         };
-        
+
         device.components = {
             // Capteur d'état du nœud
              [`${nodeName}_state`] : this.addBinarySensorDiscovery(nodeName, 'state', {
@@ -34,6 +38,16 @@ class HomeAssistantDiscovery {
                                                     payload_off: 'offline',
                                                     state_topic: `${this.baseTopic}/nodes/${nodeName}/availability`,
                                                     value_template: `{{ value }}`,
+                                                }),
+            // Capteur liste des conteneurs LXC
+            [`${nodeName}_lxc_list`]: this.addSensorDiscovery(nodeName, 'lxc_list', {
+                                                    name: `LXC Containers List`,
+                                                    icon: 'mdi:format-list-bulleted',
+                                                    device_class: null,
+                                                    unit_of_measurement: null,
+                                                    state_class: null,
+                                                    availability: availability,
+                                                    value_template: `{{ value_json.lxc_list }}`
                                                 }),
             // Capteur CPU
             [`${nodeName}_cpu_usage`] : this.addSensorDiscovery(nodeName, 'cpu_usage', {
