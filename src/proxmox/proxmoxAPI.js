@@ -63,7 +63,14 @@ class ProxmoxAPI {
             
             if (response.data && response.data.data) {
                 this.ticket = response.data.data.ticket;
+                this.csrfToken = response.data.data.CSRFPreventionToken;
+                
+                // Configurer les headers d'authentification
                 this.client.defaults.headers.Cookie = `PVEAuthCookie=${this.ticket}`;
+                if (this.csrfToken) {
+                    this.client.defaults.headers['CSRFPreventionToken'] = this.csrfToken;
+                }
+                
                 logger.info('🔑 Authentification Proxmox réussie');
             } else {
                 throw new Error('Format de réponse d\'authentification invalide');
@@ -101,7 +108,9 @@ class ProxmoxAPI {
         }, delay * 1000);
     }
 
-    async makeRequest(endpoint, method = 'GET', data = null) {
+    async makeRequest(endpoint, method = 'GET', data = null, retryCount = 0) {
+        const maxRetries = 1; // Maximum 1 retry en cas d'erreur 401
+        
         // Vérifier la connexion avant chaque requête
         if (!this.isConnected) {
             logger.warn('⚠️  Proxmox non connecté, tentative de reconnexion...');
@@ -121,14 +130,25 @@ class ProxmoxAPI {
         } catch (error) {
             this.isConnected = false;
             
-            if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.response?.status === 401) {
+            if (error.response?.status === 401 && retryCount < maxRetries) {
+                logger.warn(`🔄 Erreur 401 détectée, tentative de reconnexion et retry...`);
+                try {
+                    await this.connect();
+                    logger.info(`✅ Reconnexion réussie, retry de la requête ${endpoint}`);
+                    return await this.makeRequest(endpoint, method, data, retryCount + 1);
+                } catch (reconnectError) {
+                    logger.error(`❌ Échec de la reconnexion:`, reconnectError.message);
+                    this.scheduleReconnect();
+                    throw error;
+                }
+            } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
                 logger.warn(`⚠️  Connexion Proxmox perdue (${error.message}), reconnexion automatique...`);
                 this.scheduleReconnect();
+                throw error;
             } else {
                 logger.error(`❌ Erreur API Proxmox sur ${endpoint}:`, error.message);
+                throw error;
             }
-            
-            throw error;
         }
     }
 
@@ -158,8 +178,8 @@ class ProxmoxAPI {
 
     async getNodes() {
         try {
-            const response = await this.client.get('/nodes');
-            return response.data.data;
+            const response = await this.makeRequest('/nodes');
+            return response.data;
         } catch (error) {
             logger.error('Erreur lors de la récupération des nœuds:', error.message);
             throw error;
@@ -180,8 +200,8 @@ class ProxmoxAPI {
             }
 
             // Utiliser uniquement l'endpoint /nodes/{node}/status qui est plus fiable
-            const statusResponse = await this.client.get(`/nodes/${nodeName}/status`);
-            const statusData = statusResponse.data.data;
+            const statusResponse = await this.makeRequest(`/nodes/${nodeName}/status`);
+            const statusData = statusResponse.data;
             
             logger.debug(`Statut récupéré pour ${nodeName}:`, {
                 uptime: statusData.uptime,
@@ -253,8 +273,8 @@ class ProxmoxAPI {
         try {
             logger.debug('Récupération du statut des storages...');
 
-            const response = await this.client.get(`/nodes/${nodeName}/storage`);
-            const storages = response.data.data;
+            const response = await this.makeRequest(`/nodes/${nodeName}/storage`);
+            const storages = response.data;
             
             const result = {
                 ceph: { status: 'not_found', usage: 0, used: 0, total: 0 }
@@ -269,10 +289,10 @@ class ProxmoxAPI {
                 // Récupérer les détails du premier storage Ceph trouvé
                 const cephStorage = cephStorages[0];
                 try {
-                    const storageResponse = await this.client.get(`/nodes/${nodeName}/storage/${cephStorage.storage}/status`);
+                    const storageResponse = await this.makeRequest(`/nodes/${nodeName}/storage/${cephStorage.storage}/status`);
                     
-                    if (storageResponse.data.data) {
-                        const storageData = storageResponse.data.data;
+                    if (storageResponse.data) {
+                        const storageData = storageResponse.data;
                         const usage = storageData.total > 0 
                             ? Math.round((storageData.used / storageData.total) * 100) 
                             : 0;
@@ -316,7 +336,7 @@ class ProxmoxAPI {
 
     async restartNode(nodeName) {
         try {
-            const response = await this.client.post(`/nodes/${nodeName}/status`, {
+            const response = await this.makeRequest(`/nodes/${nodeName}/status`, "POST", {
                 command: 'reboot'
             });
             logger.info(`Redémarrage du nœud ${nodeName} initié`);
@@ -329,7 +349,7 @@ class ProxmoxAPI {
 
     async shutdownNode(nodeName) {
         try {
-            const response = await this.client.post(`/nodes/${nodeName}/status`, {
+            const response = await this.makeRequest(`/nodes/${nodeName}/status`, 'POST', {
                 command: 'shutdown'
             });
             logger.info(`Arrêt du nœud ${nodeName} initié`);
@@ -342,8 +362,8 @@ class ProxmoxAPI {
 
     async getVMs(nodeName) {
         try {
-            const response = await this.client.get(`/nodes/${nodeName}/qemu`);
-            return response.data.data;
+            const response = await this.makeRequest(`/nodes/${nodeName}/qemu`, 'POST');
+            return response.data;
         } catch (error) {
             logger.error(`Erreur lors de la récupération des VMs du nœud ${nodeName}:`, error.message);
             throw error;
@@ -352,9 +372,9 @@ class ProxmoxAPI {
 
     async getContainers(nodeName) {
         try {
-            const response = await this.client.get(`/nodes/${nodeName}/lxc`);
+            const response = await this.makeRequest(`/nodes/${nodeName}/lxc`);
             // filter ignored containers and add container Key on each container
-            const filteredList = response.data.data.filter(container => {
+            const filteredList = response.data.filter(container => {
                 const tagsArray = container.tags ? container.tags.split(';') : [];
                 return !tagsArray.find(tag => tag.trim() === 'ha-ignore');
             });
@@ -375,10 +395,10 @@ class ProxmoxAPI {
 
     async getContainersList(nodeName) {
         try {
-            const response = await this.client.get(`/nodes/${nodeName}/lxc`);
+            const response = await this.makeRequest(`/nodes/${nodeName}/lxc`);
             let lxcList = [];
             // add container Key on each container
-            response.data.data.forEach(container => {
+            response.data.forEach(container => {
 
                 // recherche le tag "ha-ignore"
                 const tagsArray = container.tags ? container.tags.split(';') : [];
@@ -398,8 +418,8 @@ class ProxmoxAPI {
         try {
             logger.debug(`Récupération du statut pour le conteneur: ${containerId} sur ${nodeName}`);
             
-            const response = await this.client.get(`/nodes/${nodeName}/lxc/${containerId}/status/current`);
-            const statusData = response.data.data;
+            const response = await this.makeRequest(`/nodes/${nodeName}/lxc/${containerId}/status/current`);
+            const statusData = response.data;
 
             logger.debug(`Statut récupéré pour ${containerId}:`, statusData);
 
@@ -484,7 +504,7 @@ class ProxmoxAPI {
 
     async startContainer(nodeName, containerId) {
         try {
-            const response = await this.client.post(`/nodes/${nodeName}/lxc/${containerId}/status/start`);
+            const response = await this.makeRequest(`/nodes/${nodeName}/lxc/${containerId}/status/start`, 'POST');
             logger.info(`Démarrage du conteneur ${containerId} sur ${nodeName} initié`);
             return response.data;
         } catch (error) {
@@ -495,7 +515,7 @@ class ProxmoxAPI {
 
     async stopContainer(nodeName, containerId) {
         try {
-            const response = await this.client.post(`/nodes/${nodeName}/lxc/${containerId}/status/stop`);
+            const response = await this.makeRequest(`/nodes/${nodeName}/lxc/${containerId}/status/stop`, 'POST');
             logger.info(`Arrêt du conteneur ${containerId} sur ${nodeName} initié`);
             return response.data;
         } catch (error) {
@@ -506,7 +526,7 @@ class ProxmoxAPI {
 
     async rebootContainer(nodeName, containerId) {
         try {
-            const response = await this.client.post(`/nodes/${nodeName}/lxc/${containerId}/status/reboot`);
+            const response = await this.makeRequest(`/nodes/${nodeName}/lxc/${containerId}/status/reboot`, 'POST');
             logger.info(`Redémarrage du conteneur ${containerId} sur ${nodeName} initié`);
             return response.data;
         } catch (error) {
@@ -588,6 +608,266 @@ class ProxmoxAPI {
             logger.error('Erreur lors de la récupération de tous les conteneurs:', error.message);
             throw error;
         }
+    }
+
+    /**
+     * Déclenche un backup pour un conteneur ou VM
+     * @param {string} nodeName - Nom du nœud
+     * @param {string} vmid - ID du conteneur/VM
+     * @param {Object} options - Options de backup
+     */
+    async startBackup(nodeName, vmid, options = {}) {
+        try {
+            const backupData = {
+                vmid: String(vmid), // S'assurer que vmid est une string
+                storage: options.storage || process.env.PROXMOX_BACKUP_STORAGE || 'local',
+                mode: options.mode || process.env.PROXMOX_BACKUP_MODE || 'stop',
+                compress: options.compress || process.env.PROXMOX_BACKUP_COMPRESS || 'zstd',
+                remove: options.remove !== undefined ? options.remove : (process.env.PROXMOX_BACKUP_REMOVE || '0'),
+                ...options
+            };
+
+            logger.info(`🔄 Démarrage du backup pour ${vmid} sur ${nodeName} (storage: ${backupData.storage})`);
+            logger.info(`📋 Paramètres de backup: ${JSON.stringify(backupData)}`);
+            
+            const response = await this.makeRequest(`/nodes/${nodeName}/vzdump`, 'POST', backupData);
+            
+            if (response && (response.data || response)) {
+                const taskId = response.data || response;
+                logger.info(`✅ Backup démarré avec l'ID de tâche: ${taskId}`);
+                return {
+                    success: true,
+                    taskId: taskId,
+                    vmid: vmid,
+                    node: nodeName
+                };
+            }
+            
+            throw new Error('Réponse API invalide pour le démarrage du backup');
+            
+        } catch (error) {
+            logger.error(`❌ Erreur lors du démarrage du backup pour ${vmid}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Récupère l'état d'une tâche de backup
+     * @param {string} nodeName - Nom du nœud
+     * @param {string} taskId - ID de la tâche
+     */
+    async getTaskStatus(nodeName, taskId) {
+        try {
+            const response = await this.makeRequest(`/nodes/${nodeName}/tasks/${taskId}/status`);
+            
+            if (response.data) {
+                const task = response.data;
+                return {
+                    status: task.status, // running, stopped
+                    exitstatus: task.exitstatus, // OK, ERROR
+                    type: task.type,
+                    id: task.id,
+                    pid: task.pid,
+                    pstart: task.pstart,
+                    starttime: task.starttime,
+                    endtime: task.endtime,
+                    user: task.user
+                };
+            }
+            
+            return null;
+        } catch (error) {
+            logger.error(`Erreur lors de la récupération du statut de la tâche ${taskId}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Récupère les logs d'une tâche de backup
+     * @param {string} nodeName - Nom du nœud  
+     * @param {string} taskId - ID de la tâche
+     * @param {number} start - Ligne de début (optionnel)
+     * @param {number} limit - Nombre de lignes (optionnel)
+     */
+    async getTaskLog(nodeName, taskId, start = 0, limit = 500) {
+        try {
+            const params = start ? `?start=${start}&limit=${limit}` : '';
+            const response = await this.makeRequest(`/nodes/${nodeName}/tasks/${taskId}/log${params}`);
+            
+            if (response.data) {
+                return response.data.map(log => ({
+                    line: log.n,
+                    text: log.t
+                }));
+            }
+            
+            return [];
+        } catch (error) {
+            logger.error(`Erreur lors de la récupération des logs de la tâche ${taskId}:`, error.message);
+            return [];
+        }
+    }
+
+    /**
+     * Liste toutes les tâches actives ou récentes
+     * @param {string} nodeName - Nom du nœud
+     * @param {string} typefilter - Filtre par type (vzdump, etc.)
+     * @param {string} source - Source des tâches (active, archive, all)
+     */
+    async getTasks(nodeName, typefilter = null, source = null) {
+        try {
+            let endpoint = `/nodes/${nodeName}/tasks`;
+            const params = [];
+            
+            if (typefilter) {
+                params.push(`typefilter=${typefilter}`);
+            }
+            
+            if (source) {
+                params.push(`source=${source}`);
+            }
+            
+            if (params.length > 0) {
+                endpoint += `?${params.join('&')}`;
+            }
+            
+            const response = await this.makeRequest(endpoint);
+            
+            if (response.data) {
+                return response.data.map(task => ({
+                    upid: task.upid,
+                    type: task.type,
+                    id: task.id,
+                    user: task.user,
+                    status: task.status,
+                    starttime: task.starttime,
+                    endtime: task.endtime,
+                    exitstatus: task.exitstatus,
+                    pid: task.pid
+                }));
+            }
+            
+            return [];
+        } catch (error) {
+            logger.error(`Erreur lors de la récupération des tâches pour ${nodeName}:`, error.message);
+            return [];
+        }
+    }
+
+    /**
+     * Récupère toutes les tâches vzdump actives de tous les nœuds
+     */
+    async getActiveBackupTasks() {
+        try {
+            const nodes = await this.getNodes();
+            const activeBackupTasks = [];
+            
+            for (const node of nodes) {
+                try {
+                    // Récupérer uniquement les tâches actives de type vzdump
+                    const tasks = await this.getTasks(node.node, 'vzdump', 'active');
+                    
+                    // Ajouter le nom du nœud à chaque tâche
+                    const tasksWithNode = tasks.map(task => ({
+                        ...task,
+                        nodeName: node.node
+                    }));
+                    
+                    activeBackupTasks.push(...tasksWithNode);
+                    
+                } catch (nodeError) {
+                    logger.warn(`Impossible de récupérer les tâches vzdump actives du nœud ${node.node}:`, nodeError.message);
+                }
+            }
+            
+            logger.debug(`Trouvé ${activeBackupTasks.length} tâches vzdump actives sur ${nodes.length} nœuds`);
+            return activeBackupTasks;
+            
+        } catch (error) {
+            logger.error('Erreur lors du scan des tâches vzdump actives:', error.message);
+            return [];
+        }
+    }
+
+    // /**
+    //  * Liste les backups existants
+    //  * @param {string} nodeName - Nom du nœud
+    //  * @param {string} storage - Nom du stockage
+    //  */
+    // async getBackups(nodeName, storage = 'local') {
+    //     try {
+    //         const response = await this.makeRequest(`/nodes/${nodeName}/storage/${storage}/content?content=backup`);
+            
+    //         if (response.data) {
+    //             return response.data.map(backup => ({
+    //                 volid: backup.volid,
+    //                 vmid: backup.vmid,
+    //                 size: backup.size,
+    //                 ctime: backup.ctime, // Date de création
+    //                 format: backup.format,
+    //                 notes: backup.notes
+    //             }));
+    //         }
+            
+    //         return [];
+    //     } catch (error) {
+    //         logger.error(`Erreur lors de la récupération des backups sur ${storage}:`, error.message);
+    //         return [];
+    //     }
+    // }
+
+    /**
+     * Parse les informations d'un backup depuis les logs
+     * @param {Array} logs - Logs de la tâche
+     */
+    parseBackupInfo(logs) {
+        const info = {
+            size: null,
+            duration: null,
+            speed: null,
+            compression: null
+        };
+
+        for (const log of logs) {
+            const text = log.text.toLowerCase();
+            
+            // Taille du backup
+            if (text.includes('archive file size:')) {
+                const sizeMatch = text.match(/archive file size:\s*([\d.,]+)\s*([A-Za-z]+)/);
+                if (sizeMatch) {
+                    // Convertir la taille en octets pour normaliser (optionnel)
+                    const value = parseFloat(sizeMatch[1].replace(',', '.'));
+                    const unit = sizeMatch[2].toUpperCase();
+                    let gigabytes = 0;
+                    if (unit === 'MB') gigabytes = value / 1024;
+                    else if (unit === 'GB') gigabytes = value;
+                    else if (unit === 'TB') gigabytes = value * 1024;
+                    else if (unit === 'KB') gigabytes = value / 1024 / 1024;
+                    info.size = gigabytes.toFixed(2); // en GiB
+                }
+            }
+
+            // Durée
+            if (text.includes('finished backup of vm') && text.includes('(')) {
+                const durationMatch = text.match(/\((\d+:\d+:\d+)\)/);
+                if (durationMatch) {
+                    info.duration = durationMatch[1];
+                    info.duration_seconds = durationMatch[1].split(':').reduce((acc, time) => (60 * acc) + parseInt(time, 10), 0);
+                }
+            }
+            
+            // Vitesse moyenne - text: "INFO: Total bytes written: 2116208640 (2.0GiB, 24MiB/s)"
+            if (text.includes('total bytes written')) {
+                const match = text.match(/total bytes written:\s*(\d+)\s*\(([\d.]+)\s*([A-Za-z]+),\s*([\d.]+)\s*([A-Za-z]+\/s)\)/i);
+                if (match) info.total_size = (parseInt(match[1], 10) / (1024 * 1024 * 1024)).toFixed(2); // en GiB
+            }
+        }
+
+        info.compression = info.size && info.total_size ? ((info.total_size - info.size) / info.total_size).toFixed(2) : null;
+        info.compression_ratio = info.size && info.total_size ? (info.total_size / info.size).toFixed(2) : null;
+        info.speed = info.duration_seconds && info.total_size ? (info.total_size*1024 / info.duration_seconds).toFixed(2) + ' MiB/s' : null;
+
+        return info;
     }
 }
 

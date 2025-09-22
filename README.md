@@ -6,6 +6,10 @@ Un pont Node.js qui connecte votre cluster Proxmox à Home Assistant via MQTT au
 
 - **Surveillance des nœuds** : CPU, mémoire, stockage, état d'alimentation
 - **Contrôles à distance** : Redémarrage, arrêt, actualisation des capteurs
+- **Gestion des sauvegardes** : 
+  - Déclenchement via Home Assistant
+  - Suivi automatique des sauvegardes lancées depuis Proxmox
+  - Surveillance en temps réel du progression et des résultats
 - **Auto-discovery MQTT** : Intégration automatique avec Home Assistant
 - **API Proxmox** : Communication temps réel avec le cluster
 
@@ -53,6 +57,12 @@ MQTT_USERNAME=your-mqtt-username
 MQTT_PASSWORD=your-mqtt-password
 MQTT_CLIENT_ID=proxmox2mqtt
 
+# Configuration des sauvegardes
+PROXMOX_BACKUP_STORAGE=local
+PROXMOX_BACKUP_MODE=snapshot
+PROXMOX_BACKUP_COMPRESS=gzip
+PROXMOX_BACKUP_REMOVE=0
+
 # Configuration générale
 UPDATE_INTERVAL=30000
 LOG_LEVEL=info
@@ -73,6 +83,22 @@ make stop           # Arrêter l'application
 npm start           # Mode production
 npm run dev         # Mode développement
 ```
+
+## Configuration des sauvegardes
+
+### Paramètres de sauvegarde
+- **`PROXMOX_BACKUP_STORAGE`** : Stockage de destination (par défaut : `local`)
+- **`PROXMOX_BACKUP_MODE`** : Mode de sauvegarde (`snapshot`, `suspend`, `stop`) (par défaut : `snapshot`)
+- **`PROXMOX_BACKUP_COMPRESS`** : Compression (`0`, `1`, `gzip`, `lzo`, `zstd`) (par défaut : `gzip`)
+- **`PROXMOX_BACKUP_REMOVE`** : Suppression des anciennes sauvegardes (`0` = garder toutes, `1+` = nombre à garder) (par défaut : `1`)
+
+### Surveillance automatique
+- **`PROXMOX_BACKUP_CHECK_INTERVAL`** : Fréquence de vérification des backups (par défaut : `10` secondes)
+
+Le système surveille automatiquement :
+- Les sauvegardes déclenchées via Home Assistant
+- Les sauvegardes lancées directement depuis l'interface Proxmox (détection des tâches actives)
+- Le progression et les résultats sont publiés en temps réel via MQTT
 
 ## Architecture
 

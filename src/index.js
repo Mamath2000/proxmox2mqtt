@@ -25,9 +25,12 @@ class Proxmox2MQTT {
         this.updateInterval = (parseInt(process.env.UPDATE_INTERVAL) || 30) * 1000;
         this.nodes = new Map();
         this.containers = new Map(); // Pour stocker les conteneurs découverts
+        this.activeBackups = new Map(); // Pour suivre les backups en cours
         this.updateTimer = null;
         this.refreshTimer = null; // Timer pour le rafraîchissement de la liste des conteneurs
+        this.backupTimer = null; // Timer pour le suivi des backups
         this.refreshInterval = (parseInt(process.env.REFRESH_INTERVAL) || 300) * 1000; // 5 minutes par défaut
+        this.backupCheckInterval = (parseInt(process.env.PROXMOX_BACKUP_CHECK_INTERVAL) || 10) * 1000; // Vérifier les backups
     }
 
     async start() {
@@ -56,6 +59,9 @@ class Proxmox2MQTT {
             // Démarrage du rafraîchissement périodique de la liste des conteneurs
             this.startPeriodicRefresh();
 
+            // Démarrage de la surveillance des backups
+            this.startBackupMonitoring();
+
             logger.info('Proxmox2MQTT démarré avec succès');
         } catch (error) {
             logger.error('Erreur lors du démarrage:', error);
@@ -79,6 +85,13 @@ class Proxmox2MQTT {
                 clearInterval(this.refreshTimer);
                 this.refreshTimer = null;
                 logger.debug('Timer de rafraîchissement arrêté');
+            }
+
+            // Arrêter la surveillance des backups
+            if (this.backupTimer) {
+                clearInterval(this.backupTimer);
+                this.backupTimer = null;
+                logger.debug('Timer de surveillance backups arrêté');
             }
 
             // Marquer tous les nœuds comme hors ligne
@@ -305,14 +318,31 @@ class Proxmox2MQTT {
     }
 
     async handleCommand(topic, payload) {
+        if (!payload) {
+            logger.warn(`Commande reçue sans payload: ${topic}`);
+            return;
+        }
+
+        // Vérifier que le payload est un JSON valide
+        let jpayload;
         try {
-            const jpayload = JSON.parse(payload); // Valider le JSON
+            jpayload = JSON.parse(payload);
+        } catch (e) {
+            logger.warn(`Payload JSON invalide pour la commande sur ${topic}: ${e.message}`);
+            return;
+        }
+
+        try {
             const topicParts = topic.split('/');
 
             // Déterminer si c'est une commande pour un nœud ou un conteneur
             if (topicParts[1] === 'lxc') {
                 // Commande pour un conteneur: proxmox2mqtt/lxc/{containerName}/command/{action}
                 const containerKey = topicParts[2];
+                if (!jpayload.action) {
+                    logger.warn(`Payload de commande invalide pour le conteneur ${containerKey}: champ "action" manquant`);
+                    return;
+                }
                 const action = jpayload.action;
 
                 logger.info(`Commande reçue: ${action} pour le conteneur ${containerKey}`);
@@ -337,12 +367,62 @@ class Proxmox2MQTT {
                     case 'refresh':
                         await this.updateContainerData(containerKey);
                         break;
+                    case 'backup':
+                        try {
+                            const backupResult = await this.proxmox.startBackup(containerInfo.node, containerInfo.vmid);
+                            
+                            if (backupResult.success) {
+                                // Enregistrer le backup pour le suivi
+                                const backupKey = `${containerInfo.node}_${containerInfo.vmid}_${backupResult.taskId}`;
+                                this.activeBackups.set(backupKey, {
+                                    key: containerKey,
+                                    node: containerInfo.node,
+                                    vmid: containerInfo.vmid,
+                                    taskId: backupResult.taskId,
+                                    status: 'running',
+                                    startTime: Date.now(),
+                                    lastCheck: Date.now()
+                                });
+                                
+                                logger.info(`📝 Backup enregistré pour suivi: ${containerKey} (task: ${backupResult.taskId})`);
+                                
+                                // Publier le statut initial
+                                await this.publishBackupStatus(containerKey, {
+                                    status: 'running',
+                                    progress: 'started',
+                                    task_id: backupResult.taskId,
+                                    start_time: Date.now()
+                                });
+                            }
+                        } catch (backupError) {
+                            logger.error(`Erreur backup pour ${containerKey}:`, backupError.message);
+                            
+                            // Publier l'erreur avec la structure unifiée
+                            await this.publishBackupStatus(containerKey, {
+                                status: 'error',
+                                progress: 'failed',
+                                task_id: null,
+                                start_time: Date.now(),
+                                end_time: Date.now(),
+                                result: null,
+                                size: null,
+                                duration: null,
+                                speed: null,
+                                compression: null,
+                                error: backupError.message
+                            });
+                        }
+                        break;
                     default:
                         logger.warn(`Action inconnue pour conteneur: ${action}`);
                 }
             } else if (topicParts[1] === 'nodes') {
                 // Commande pour un nœud: proxmox2mqtt/nodes/{nodeName}/command
                 const nodeName = topicParts[2];
+                if (!jpayload.action) {
+                    logger.warn(`Payload de commande invalide pour le conteneur ${containerKey}: champ "action" manquant`);
+                    return;
+                }
                 const action = jpayload.action;
 
                 logger.info(`Commande reçue: ${action} pour le nœud ${nodeName}`);
@@ -380,6 +460,247 @@ class Proxmox2MQTT {
         }, this.refreshInterval);
 
         logger.info(`Rafraîchissement périodique des conteneurs configuré (${this.refreshInterval / 1000}s)`);
+    }
+
+    startBackupMonitoring() {
+        this.backupTimer = setInterval(async () => {
+            await this.scanForNewBackups(); // Nouveau: scanner les nouvelles sauvegardes
+            await this.checkActiveBackups(); // Vérifier l'état des backups actifs
+        }, this.backupCheckInterval);
+
+        logger.info(`Surveillance des backups configurée (${this.backupCheckInterval / 1000}s)`);
+    }
+
+    /**
+     * Scanne et détecte les nouvelles tâches vzdump actives depuis Proxmox
+     */
+    async scanForNewBackups() {
+        try {
+            // Récupérer uniquement les tâches vzdump actives
+            const activeBackupTasks = await this.proxmox.getActiveBackupTasks();
+            
+            logger.debug(`Scan backup: ${activeBackupTasks.length} tâches vzdump actives trouvées`);
+            
+            for (const task of activeBackupTasks) {
+                const taskKey = `${task.nodeName}_${task.upid}`;
+                
+                // Si cette tâche n'est pas encore suivie, l'ajouter
+                if (!this.activeBackups.has(taskKey)) {
+                    const vmid = task.id;
+
+                    if (vmid) {
+                        // Chercher la clé du conteneur correspondant dans this.containers
+                        const containerEntry = Array.from(this.containers.entries()).find(
+                            ([, info]) => info.vmid?.toString() === vmid.toString()
+                        );
+                        const containerKey = containerEntry ? containerEntry[0] : null;
+                        if (!containerKey) {
+                            logger.debug(`Aucune clé de conteneur trouvée pour vmid=${vmid}`);
+                            return; // On sort de la méthode si non trouvé
+                        }
+                        
+                        // Vérifier s'il y a une ancienne sauvegarde suivie pour ce conteneur
+                        const existingBackupKeys = Array.from(this.activeBackups.keys()).filter(key => {
+                            const backupInfo = this.activeBackups.get(key);
+                            return backupInfo.key === containerKey;
+                        });
+                        
+                        // Supprimer les anciennes sauvegardes de ce conteneur
+                        for (const oldKey of existingBackupKeys) {
+                            const oldBackup = this.activeBackups.get(oldKey);
+                            logger.info(`🔄 Remplacement de l'ancienne sauvegarde ${oldBackup.taskId} par la nouvelle active ${task.upid} pour ${containerKey}`);
+                            this.activeBackups.delete(oldKey);
+                        }
+                        
+                        // Créer une entrée de suivi pour cette sauvegarde active
+                        const backupInfo = {
+                            key: containerKey,
+                            node: task.nodeName,
+                            vmid: vmid,
+                            taskId: task.upid,
+                            startTime: task.starttime,
+                            status: task.status,
+                            lastCheck: Date.now(),
+                            detectedFromProxmox: true
+                        };
+                        
+                        this.activeBackups.set(taskKey, backupInfo);
+                        
+                        logger.info(`⏳ Nouvelle sauvegarde active détectée: ${vmid} sur ${task.nodeName} (${task.status})`);
+                        
+                        // Publier le statut initial (forcément "running" puisque active)
+                        await this.publishBackupStatus(backupInfo.key, {
+                            status: 'running',
+                            progress: 'in_progress',
+                            task_id: task.upid,
+                            start_time: task.starttime,
+                            end_time: null,
+                            result: null,
+                            size: null,
+                            duration: null,
+                            duration_human: null,
+                            speed: null,
+                            compression: null,
+                            compression_ratio: null
+                        });
+                    } else {
+                        logger.debug(`Impossible d'extraire l'ID conteneur de la tâche active: ${task.upid}`);
+                    }
+                }
+            }
+            
+        } catch (error) {
+            logger.error('Erreur lors du scan des nouvelles sauvegardes actives:', error.message);
+        }
+    }
+
+    // /**
+    //  * Extrait l'ID du conteneur depuis une tâche vzdump
+    //  */
+    // extractContainerIdFromTask(task) {
+    //     try {
+    //         // L'UPID a le format: UPID:node:PID:starttime:type:id:user@realm:
+    //         // Mais en réalité il semble être: UPID:node:PID:starttime:timestamp:type:id:user@realm:
+    //         const upidParts = task.upid.split(':');
+    //         if (upidParts.length >= 7 && upidParts[5] === 'vzdump') {
+    //             return upidParts[6]; // ID du conteneur/VM
+    //         }
+            
+    //         // Fallback: utiliser task.id si disponible
+    //         if (task.id) {
+    //             return task.id.toString();
+    //         }
+            
+    //         return null;
+    //     } catch (error) {
+    //         logger.debug(`Impossible d'extraire l'ID du conteneur depuis la tâche:`, error.message);
+    //         return null;
+    //     }
+    // }
+
+    /**
+     * Vérifie l'état des backups actifs et met à jour MQTT
+     */
+    async checkActiveBackups() {
+        try {
+            const now = Date.now();
+            const backupsToRemove = [];
+
+            for (const [backupKey, backupInfo] of this.activeBackups) {
+                try {
+                    const taskStatus = await this.proxmox.getTaskStatus(backupInfo.node, backupInfo.taskId);
+                    
+                    if (taskStatus) {
+                        // Mettre à jour le statut
+                        backupInfo.status = taskStatus.status;
+                        backupInfo.lastCheck = now;
+
+                        // Publier le statut sur MQTT
+                        await this.publishBackupStatus(backupInfo.key, {
+                            status: taskStatus.status,
+                            progress: taskStatus.status === 'running' ? 'in_progress' : taskStatus.exitstatus || 'unknown',
+                            // task_id: backupInfo.taskId,
+                            start_time: taskStatus.starttime || backupInfo.startTime,
+                            result: null,
+                            initial_size: null,
+                            size: null,
+                            duration: null,
+                            duration_seconds: null,
+                            speed: null,
+                            compression: null,
+                            compression_ratio: null
+                        });
+
+                        // Si le backup est terminé
+                        if (taskStatus.status === 'stopped') {
+                            logger.info(`Backup terminé pour ${backupInfo.key} (${taskStatus.exitstatus})`);
+                            
+                            // Récupérer les logs finaux pour extraire les informations
+                            const logs = await this.proxmox.getTaskLog(backupInfo.node, backupInfo.taskId);
+                            const backupDetails = this.proxmox.parseBackupInfo(logs);
+                            
+                            // Publier les informations finales avec la méthode unifiée
+                            await this.publishBackupStatus(backupInfo.key, {
+                                status: 'completed',
+                                progress: taskStatus.exitstatus === 'OK' ? 'success' : 'failed',
+                                // task_id: backupInfo.taskId,
+                                start_time: taskStatus.starttime || backupInfo.startTime,
+                                result: taskStatus.exitstatus || null,
+                                initial_size: backupDetails.total_size || null,
+                                size: backupDetails.size || null,
+                                duration: backupDetails.duration || null,
+                                duration_seconds: backupDetails.duration_seconds || null,
+                                speed: backupDetails.speed || null,
+                                compression: backupDetails.compression || null,
+                                compression_ratio: backupDetails.compression_ratio || null
+                            });
+
+                            // Marquer pour suppression
+                            backupsToRemove.push(backupKey);
+                        }
+                    } else {
+                        // Pas de statut trouvé, peut-être terminé
+                        if (now - backupInfo.lastCheck > 60000) { // Plus de 1 minute sans statut
+                            logger.warn(`Statut backup introuvable pour ${backupInfo.containerKey}, suppression du suivi`);
+                            backupsToRemove.push(backupKey);
+                        }
+                    }
+                } catch (error) {
+                    logger.error(`Erreur lors de la vérification du backup ${backupKey}:`, error.message);
+                    
+                    // Si erreur persistante, supprimer après 5 minutes
+                    if (now - backupInfo.lastCheck > 300000) {
+                        backupsToRemove.push(backupKey);
+                    }
+                }
+            }
+
+            // Supprimer les backups terminés
+            backupsToRemove.forEach(key => {
+                this.activeBackups.delete(key);
+                logger.debug(`Suppression du suivi backup: ${key}`);
+            });
+
+        } catch (error) {
+            logger.error('Erreur lors de la vérification des backups actifs:', error.message);
+        }
+    }
+
+    /**
+     * Publie le statut d'un backup (en cours ou terminé)
+     */
+    async publishBackupStatus(containerKey, status) {
+        try {
+            const topic = `proxmox2mqtt/lxc/${containerKey}/backup_status`;
+            
+            // Structure JSON unifiée pour tous les états
+            const backupStatus = {
+                status: status.status,
+                progress: status.progress,
+                task_id: status.task_id,
+                start_time: status.start_time,
+                result: status.result || null,
+                size: status.size || null,
+                duration: status.duration || null,
+                duration_seconds: status.duration_seconds || null,
+                speed: status.speed || null,
+                compression: status.compression || null,
+                compression_ratio: status.compression_ratio || null,
+                initial_size: status.initial_size || null,
+                error: status.error || null,
+                timestamp: new Date().toISOString()
+            };
+
+            await this.mqtt.publish(topic, JSON.stringify(backupStatus), { retain: true });
+
+            // Log des informations de backup si c'est un backup terminé
+            if (status.status === 'completed') {
+                logger.info(`📊 Backup ${containerKey} terminé: ${status.result} | Taille: ${status.size}GB | Durée: ${status.duration}`);
+            }
+
+        } catch (error) {
+            logger.error(`Erreur lors de la publication du statut backup pour ${containerKey}:`, error.message);
+        }
     }
 
     /**

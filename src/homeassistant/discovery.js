@@ -428,7 +428,61 @@ class HomeAssistantDiscovery {
                 state_class: 'measurement',
                 availability: [lxcAvailability, nodeAvailability]
             }),
+
+            // Capteurs de backup
+            [`${container.key}_backup_status`]: this.addSensorDiscovery(container.key, 'backup_status', {
+                name: `Backup Status`,
+                icon: 'mdi:backup-restore',
+                device_class: null,
+                state_class: null,
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ value_json.status }}`,
+                json_attributes_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                // json_attributes_template: `{{ value_json }}`,
+                availability: [ nodeAvailability ]
+            }),
             
+            [`${container.key}_backup_progress`]: this.addSensorDiscovery(container.key, 'backup_progress', {
+                name: `Backup Progress`,
+                icon: 'mdi:progress-clock',
+                device_class: null,
+                state_class: null,
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ value_json.progress }}`,
+                availability: [nodeAvailability]
+            }),
+            
+            [`${container.key}_last_backup_size`]: this.addSensorDiscovery(container.key, 'last_backup_size', {
+                name: `Backup Size`,
+                icon: 'mdi:file-chart',
+                device_class: 'data_size',
+                unit_of_measurement: 'GB',
+                state_class: 'measurement',
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ value_json.size | float | round(2) }}`,
+                availability: [nodeAvailability]
+            }),
+            
+            [`${container.key}_last_backup_time`]: this.addSensorDiscovery(container.key, 'last_backup_time', {
+                name: `Backup Time`,
+                icon: 'mdi:clock-outline',
+                device_class: null,
+                // unit_of_measurement: "s",
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ value_json.duration }}`,
+                availability: [nodeAvailability]
+            }),
+
+            [`${container.key}_start_backup_time`]: this.addSensorDiscovery(container.key, 'start_backup_time', {
+                name: `Backup start`,
+                icon: 'mdi:clock-outline',
+                device_class: 'timestamp',
+                // unit_of_measurement: "s",
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ as_datetime(value_json.start_time) }}`,
+                availability: [nodeAvailability]
+            }),
+
             // Boutons de contrôle
             [`${container.key}_start`]: this.addButtonDiscovery(container.key,"lxc", 'start', {
                 name: `Start`,
@@ -453,6 +507,14 @@ class HomeAssistantDiscovery {
             [`${container.key}_refresh`]: this.addButtonDiscovery(container.key,"lxc", 'refresh', {
                 name: `Refresh`,
                 icon: 'mdi:refresh',
+                device_class: null,
+                availability: [lxcAvailability]
+            }),
+            
+            // Bouton de backup
+            [`${container.key}_backup`]: this.addButtonDiscovery(container.key, "lxc", 'backup', {
+                name: `Backup`,
+                icon: 'mdi:backup-restore',
                 device_class: null,
                 availability: [lxcAvailability]
             })
