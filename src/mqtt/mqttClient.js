@@ -70,6 +70,11 @@ class MQTTClient extends EventEmitter {
                     resolve();
                 });
                 
+                // Gestionnaire pour les messages reçus
+                this.client.on('message', (topic, message) => {
+                    this.handleMessage(topic, message);
+                });
+                
                 this.client.on('error', (error) => {
                     clearTimeout(timeout);
                     logger.error('Erreur MQTT:', error);
@@ -123,7 +128,7 @@ class MQTTClient extends EventEmitter {
     handleMessage(topic, message) {
         try {
             const payload = message.toString();
-            logger.debug(`Message reçu sur ${topic}: ${payload}`);
+            logger.info(`📨 Message MQTT reçu sur ${topic}: ${payload}`);
             
             // Émettre l'événement pour que l'application principale puisse traiter la commande
             this.emit('command', topic, payload);
