@@ -441,6 +441,18 @@ class HomeAssistantDiscovery {
                 // json_attributes_template: `{{ value_json }}`,
                 availability: [ nodeAvailability ]
             }),
+
+            [`${container.key}_backup_problem`]: this.addBinarySensorDiscovery(container.key, 'problem', {
+                name: `Backup Problem`,
+                icon: 'mdi:server',
+                device_class: 'problem',
+                payload_on: 'failed',
+                payload_off: 'success',
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                json_attributes_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ 'failed' if value_json.progress == 'failed' else 'success' }}`,
+                availability: [nodeAvailability]                
+            }),
             
             [`${container.key}_backup_progress`]: this.addSensorDiscovery(container.key, 'backup_progress', {
                 name: `Backup Progress`,
@@ -459,7 +471,7 @@ class HomeAssistantDiscovery {
                 unit_of_measurement: 'GB',
                 state_class: 'measurement',
                 state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
-                value_template: `{{ value_json.size | float | round(2) }}`,
+                value_template: `{{ value_json.size_gib | float | round(2) }}`,
                 availability: [nodeAvailability]
             }),
             
@@ -470,6 +482,28 @@ class HomeAssistantDiscovery {
                 // unit_of_measurement: "s",
                 state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
                 value_template: `{{ value_json.duration }}`,
+                availability: [nodeAvailability]
+            }),
+
+            [`${container.key}_last_backup_compression`]: this.addSensorDiscovery(container.key, 'last_backup_compression', {
+                name: `Backup Compression`,
+                icon: 'mdi:zip-box',
+                device_class: null,
+                unit_of_measurement: "%",
+                state_class: 'measurement',
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ value_json.compression }}`,
+                availability: [nodeAvailability]
+            }),
+
+            [`${container.key}_last_backup_speed`]: this.addSensorDiscovery(container.key, 'last_backup_speed', {
+                name: `Backup Speed`,
+                icon: 'mdi:speedometer',
+                device_class: null,
+                unit_of_measurement: "MB/s",
+                state_class: 'measurement',
+                state_topic: `${this.baseTopic}/lxc/${container.key}/backup_status`,
+                value_template: `{{ value_json.speed | float | round(2) }}`,
                 availability: [nodeAvailability]
             }),
 
