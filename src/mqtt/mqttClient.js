@@ -162,25 +162,25 @@ class MQTTClient extends EventEmitter {
 
             // Publication des données complètes en JSON
             await this.publish(baseTopic, JSON.stringify({
-                cpu_usage: data.cpu.usage,
-                cpu_cores: data.cpu.cores,
-                mem_usage: data.memory.usage,
-                mem_used: data.memory.used,
-                mem_total: data.memory.total,
-                disk_usage: data.disk.usage,
-                disk_used: data.disk.used,
-                disk_total: data.disk.total,
-                load1: data.load1,
-                load5: data.load5,
-                load15: data.load15,
+                cpu_usage: data.cpu?.usage || 0,
+                cpu_cores: data.cpu?.cores || 0,
+                mem_usage: data.memory?.usage || 0,
+                mem_used: data.memory?.used || 0,
+                mem_total: data.memory?.total || 0,
+                disk_usage: data.disk?.usage || 0,
+                disk_used: data.disk?.used || 0,
+                disk_total: data.disk?.total || 0,
+                load1: data.load1 || 0,
+                load5: data.load5 || 0,
+                load15: data.load15 || 0,
                 ceph_status: data.ceph?.status || 'unknown',
                 ceph_usage: data.ceph?.usage || 0,
                 ceph_used: data.ceph?.used || 0,
                 ceph_total: data.ceph?.total || 0,
-                uptime: data.uptime,
-                lxc_count: data.lxcList.length,
-                lxc_list: { containers: data.lxcList },
-                last_update: data.lastUpdate
+                uptime: data.uptime || 0,
+                lxc_count: data.lxcList?.length || 0,
+                lxc_list: { containers: data.lxcList || [] },
+                last_update: data.lastUpdate || 0
             }), { retain: true });
 
             logger.debug(`Données publiées pour le nœud ${nodeName}`);
