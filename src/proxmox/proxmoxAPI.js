@@ -12,44 +12,41 @@ class ProxmoxAPI {
         this.baseReconnectInterval = parseInt(process.env.PROXMOX_RECONNECT_INTERVAL) || 30; // secondes
         this.maxReconnectInterval = parseInt(process.env.PROXMOX_MAX_RECONNECT_INTERVAL) || 300; // 5 minutes max
         this.reconnectTimer = null;
+        this.connectingPromise = null;
     }
 
     async connect() {
-        try {
-            logger.info(`Connexion à Proxmox: ${this.config.host}:${this.config.port} (tentative #${this.reconnectAttempts + 1})`);
-            
-            this.client = axios.create({
-                baseURL: `https://${this.config.host}:${this.config.port}/api2/json`,
-                httpsAgent: new https.Agent({
-                    rejectUnauthorized: false
-                }),
-                timeout: 30000,
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                }
-            });
-
-            await this.authenticate();
-            this.isConnected = true;
-            this.reconnectAttempts = 0; // Reset du compteur après succès
-            
-            // Arrêter le timer de reconnexion s'il est actif
-            if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-                this.reconnectTimer = null;
-            }
-            
-            logger.info('✅ Connexion à Proxmox rétablie avec succès');
-            return true;
-            
-        } catch (error) {
-            this.isConnected = false;
-            logger.error('❌ Erreur de connexion Proxmox:', error.message);
-            
-            // Déclencher la reconnexion automatique (sans limite)
-            this.scheduleReconnect();
-            throw error;
+        if (this.connectingPromise) {
+            return this.connectingPromise;
         }
+        this.connectingPromise = (async () => {
+            try {
+                logger.info(`Connexion à Proxmox: ${this.config.host}:${this.config.port} (tentative #${this.reconnectAttempts + 1})`);
+                this.client = axios.create({
+                    baseURL: `https://${this.config.host}:${this.config.port}/api2/json`,
+                    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+                    timeout: 30000,
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+                await this.authenticate();
+                this.isConnected = true;
+                this.reconnectAttempts = 0;
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
+                logger.info('✅ Connexion à Proxmox rétablie avec succès');
+                return true;
+            } catch (error) {
+                this.isConnected = false;
+                logger.error('❌ Erreur de connexion Proxmox:', error.message);
+                this.scheduleReconnect();
+                throw error;
+            } finally {
+                this.connectingPromise = null;
+            }
+        })();
+        return this.connectingPromise;
     }
 
     async authenticate() {
@@ -146,7 +143,14 @@ class ProxmoxAPI {
                 this.scheduleReconnect();
                 throw error;
             } else {
-                logger.error(`❌ Erreur API Proxmox sur ${endpoint}:`, error.message);
+                logger.error(`❌ Erreur API Proxmox sur ${endpoint}:`, {
+                    message: error.message,
+                    status: error.response?.status,
+                    statusText: error.response?.statusText,
+                    data: error.response?.data,
+                    code: error.code,
+                    endpoint: endpoint
+                });
                 throw error;
             }
         }
@@ -362,7 +366,8 @@ class ProxmoxAPI {
 
     async getVMs(nodeName) {
         try {
-            const response = await this.makeRequest(`/nodes/${nodeName}/qemu`, 'POST');
+            // GET et non POST
+            const response = await this.makeRequest(`/nodes/${nodeName}/qemu`);
             return response.data;
         } catch (error) {
             logger.error(`Erreur lors de la récupération des VMs du nœud ${nodeName}:`, error.message);
@@ -383,7 +388,13 @@ class ProxmoxAPI {
             });
             return filteredList;
         } catch (error) {
-            logger.error(`Erreur lors de la récupération des conteneurs du nœud ${nodeName}:`, error.message);
+            logger.error(`Erreur lors de la récupération des conteneurs du nœud ${nodeName}:`, {
+                message: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                data: error.response?.data,
+                code: error.code
+            });
             throw error;
         }
     }
@@ -575,42 +586,6 @@ class ProxmoxAPI {
     }
 
     /**
-     * Récupère la liste complète de tous les conteneurs du cluster
-     * avec leur nœud associé
-     */
-    async getAllContainers() {
-        try {
-            logger.debug('Récupération de tous les conteneurs du cluster...');
-            
-            const nodes = await this.getNodes();
-            const allContainers = [];
-            
-            for (const node of nodes) {
-                try {
-                    const containers = await this.getContainers(node.node);
-                    containers.forEach(container => {
-                        allContainers.push({
-                            ...container,
-                            node: node.node,
-                            key: `${container.vmid}_${container.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}`
-                        });
-                    });
-                } catch (nodeError) {
-                    logger.warn(`Erreur lors de la récupération des conteneurs sur ${node.node}:`, nodeError.message);
-                    continue;
-                }
-            }
-            
-            logger.debug(`${allContainers.length} conteneurs trouvés dans le cluster`);
-            return allContainers;
-            
-        } catch (error) {
-            logger.error('Erreur lors de la récupération de tous les conteneurs:', error.message);
-            throw error;
-        }
-    }
-
-    /**
      * Déclenche un backup pour un conteneur ou VM
      * @param {string} nodeName - Nom du nœud
      * @param {string} vmid - ID du conteneur/VM
@@ -789,86 +764,6 @@ class ProxmoxAPI {
         }
     }
 
-    // /**
-    //  * Liste les backups existants
-    //  * @param {string} nodeName - Nom du nœud
-    //  * @param {string} storage - Nom du stockage
-    //  */
-    // async getBackups(nodeName, storage = 'local') {
-    //     try {
-    //         const response = await this.makeRequest(`/nodes/${nodeName}/storage/${storage}/content?content=backup`);
-            
-    //         if (response.data) {
-    //             return response.data.map(backup => ({
-    //                 volid: backup.volid,
-    //                 vmid: backup.vmid,
-    //                 size: backup.size,
-    //                 ctime: backup.ctime, // Date de création
-    //                 format: backup.format,
-    //                 notes: backup.notes
-    //             }));
-    //         }
-            
-    //         return [];
-    //     } catch (error) {
-    //         logger.error(`Erreur lors de la récupération des backups sur ${storage}:`, error.message);
-    //         return [];
-    //     }
-    // }
-
-    /**
-     * Parse les informations d'un backup depuis les logs
-     * @param {Array} logs - Logs de la tâche
-     */
-    parseBackupInfo(logs) {
-        const info = {
-            size: null,
-            duration: null,
-            speed: null,
-            compression: null
-        };
-
-        for (const log of logs) {
-            const text = log.text.toLowerCase();
-            
-            // Taille du backup
-            if (text.includes('archive file size:')) {
-                const sizeMatch = text.match(/archive file size:\s*([\d.,]+)\s*([A-Za-z]+)/);
-                if (sizeMatch) {
-                    // Convertir la taille en octets pour normaliser (optionnel)
-                    const value = parseFloat(sizeMatch[1].replace(',', '.'));
-                    const unit = sizeMatch[2].toUpperCase();
-                    let gigabytes = 0;
-                    if (unit === 'MB') gigabytes = value / 1024;
-                    else if (unit === 'GB') gigabytes = value;
-                    else if (unit === 'TB') gigabytes = value * 1024;
-                    else if (unit === 'KB') gigabytes = value / 1024 / 1024;
-                    info.size = gigabytes.toFixed(2); // en GiB
-                }
-            }
-
-            // Durée
-            if (text.includes('finished backup of vm') && text.includes('(')) {
-                const durationMatch = text.match(/\((\d+:\d+:\d+)\)/);
-                if (durationMatch) {
-                    info.duration = durationMatch[1];
-                    info.duration_seconds = durationMatch[1].split(':').reduce((acc, time) => (60 * acc) + parseInt(time, 10), 0);
-                }
-            }
-            
-            // Vitesse moyenne - text: "INFO: Total bytes written: 2116208640 (2.0GiB, 24MiB/s)"
-            if (text.includes('total bytes written')) {
-                const match = text.match(/total bytes written:\s*(\d+)\s*\(([\d.]+)\s*([A-Za-z]+),\s*([\d.]+)\s*([A-Za-z]+\/s)\)/i);
-                if (match) info.total_size = (parseInt(match[1], 10) / (1024 * 1024 * 1024)).toFixed(2); // en GiB
-            }
-        }
-
-        info.compression = info.size && info.total_size ? ((info.total_size - info.size) / info.total_size).toFixed(2) : null;
-        info.compression_ratio = info.size && info.total_size ? (info.total_size / info.size).toFixed(2) : null;
-        info.speed = info.duration_seconds && info.total_size ? (info.total_size*1024 / info.duration_seconds).toFixed(2) + ' MiB/s' : null;
-
-        return info;
-    }
 }
 
 module.exports = ProxmoxAPI;
