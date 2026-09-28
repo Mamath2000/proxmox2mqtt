@@ -163,10 +163,9 @@ class MQTTClient extends EventEmitter {
             // Publication des données complètes en JSON
             // Trier les conteneurs par nom dans lxc_list avant publication
             const sortedLxcList = (data.lxcList || []).slice().sort((a, b) => {
-                if (a.name && b.name) {
-                    return a.name.localeCompare(b.name);
-                }
-                return 0;
+                const aNum = parseInt(a.split('_')[0], 10);
+                const bNum = parseInt(b.split('_')[0], 10);
+                return aNum - bNum;
             });
 
             const nodePayload = {

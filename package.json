@@ -1,6 +1,6 @@
 {
   "name": "proxmox2mqtt",
-  "version": "1.0.11",
+  "version": "1.0.13",
   "description": "Pont Node.js qui connecte votre cluster Proxmox à Home Assistant via MQTT auto-discovery",
   "main": "src/index.js",
   "scripts": {
